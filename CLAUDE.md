@@ -30,7 +30,7 @@ React 18 + Vite SPA with zero backend. All data lives in browser `localStorage`.
 
 ### Key patterns
 
-- **Routing** is pathname-based (not hash). The server must serve `index.html` for all routes.
+- **Routing** is hash-based (`/#admin`). No server configuration needed — works with any static file server.
 - **Auth** uses `sessionStorage` tokens (separate for client and admin). Passwords are compared client-side — this is UX gatekeeping, not real security.
 - **localStorage keys**: `"draw-projects"` (array of project objects) and `"draw-settings"` (project metadata + stages config).
 - **Coordinate system** uses `SVG.getScreenCTM()` for accurate screen-to-image coordinate conversion across zoom levels. The `getSVGPoint()` and `cPos()` helpers handle this.
