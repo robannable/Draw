@@ -111,14 +111,14 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [settings, setSettings] = useState(getSettings);
   const [clientAuthed, setClientAuthed] = useState(() => sessionStorage.getItem("draw-client-session") === "true");
-  const [route, setRoute] = useState(() => window.location.pathname);
+  const [route, setRoute] = useState(() => window.location.hash);
   const [movePopup, setMovePopup] = useState(null); // project id with open move popup
 
-  // Path routing
+  // Hash routing
   useEffect(() => {
-    const onPop = () => setRoute(window.location.pathname);
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
+    const onHash = () => setRoute(window.location.hash);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
   // Refresh settings when coming back from admin
@@ -133,8 +133,8 @@ export default function App() {
   const projectName = settings.projectName || "Drawing Notes";
 
   // Admin route
-  if (route.startsWith("/admin")) {
-    const navigateHome = () => { window.history.pushState({}, "", "/"); setRoute("/"); };
+  if (route === "#admin") {
+    const navigateHome = () => { window.location.hash = ""; setRoute(""); };
     return <Admin onBack={navigateHome} />;
   }
 
@@ -237,6 +237,10 @@ export default function App() {
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <span style={{ fontSize: 12, color: C.muted, fontFamily: "'DM Mono',monospace" }}>{projects.length} drawing{projects.length !== 1 ? "s" : ""}</span>
+          <a href="#admin" style={{
+            color: C.muted, fontSize: 12, fontFamily: "'DM Mono',monospace",
+            textDecoration: "none", opacity: 0.6,
+          }}>Admin</a>
           <button onClick={handleLogout} style={{
             background: "transparent", color: C.muted, border: `1px solid ${C.border}`, padding: "8px 16px",
             fontSize: 12, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: "pointer", borderRadius: 0,
