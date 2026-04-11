@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 const C = {
   ink: "#1a1a1a", bg: "#f5f2ed", paper: "#ffffff",
@@ -7,6 +7,25 @@ const C = {
 
 const ADMIN_PW = import.meta.env.VITE_ADMIN_PASSWORD || "admin";
 
+export const DEFAULT_STAGES = [
+  { id: "design", label: "Design", color: "#2563eb", bg: "#eff6ff", active: true },
+  { id: "construction", label: "Construction", color: "#d97706", bg: "#fffbeb", active: true },
+  { id: "handover", label: "Handover", color: "#059669", bg: "#ecfdf5", active: true },
+];
+
+export const COLOR_PRESETS = [
+  { color: "#2563eb", bg: "#eff6ff" },
+  { color: "#d97706", bg: "#fffbeb" },
+  { color: "#059669", bg: "#ecfdf5" },
+  { color: "#dc2626", bg: "#fef2f2" },
+  { color: "#7c3aed", bg: "#f5f3ff" },
+  { color: "#0891b2", bg: "#ecfeff" },
+  { color: "#ea580c", bg: "#fff7ed" },
+  { color: "#4f46e5", bg: "#eef2ff" },
+  { color: "#db2777", bg: "#fdf2f8" },
+  { color: "#475569", bg: "#f8fafc" },
+];
+
 function loadSettings() {
   try { return JSON.parse(localStorage.getItem("draw-settings") || "{}"); }
   catch { return {}; }
@@ -14,6 +33,29 @@ function loadSettings() {
 
 export function getSettings() {
   return loadSettings();
+}
+
+export function getStages() {
+  return loadSettings().stages || DEFAULT_STAGES;
+}
+
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+function loadProjects() {
+  try { return JSON.parse(localStorage.getItem("draw-projects") || "[]"); }
+  catch { return []; }
+}
+function saveProjectsToStorage(projects) {
+  localStorage.setItem("draw-projects", JSON.stringify(projects));
+}
+
+function stageId(label, existing) {
+  let base = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  if (!base) base = "stage";
+  let id = base;
+  let n = 2;
+  while (existing.some(s => s.id === id)) { id = `${base}-${n++}`; }
+  return id;
 }
 
 export default function Admin({ onBack }) {
@@ -26,7 +68,13 @@ export default function Admin({ onBack }) {
   const [projectAddress, setProjectAddress] = useState("");
   const [projectRef, setProjectRef] = useState("");
   const [description, setDescription] = useState("");
+  const [stages, setStages] = useState(DEFAULT_STAGES);
+  const [newStageName, setNewStageName] = useState("");
+  const [colorPickerOpen, setColorPickerOpen] = useState(null);
+  const [importStage, setImportStage] = useState("");
+  const [importResult, setImportResult] = useState(null);
   const [saved, setSaved] = useState(false);
+  const importRef = useRef(null);
 
   useEffect(() => {
     if (authed) {
@@ -36,6 +84,7 @@ export default function Admin({ onBack }) {
       setProjectAddress(s.projectAddress || "");
       setProjectRef(s.projectRef || "");
       setDescription(s.description || "");
+      setStages(s.stages || DEFAULT_STAGES);
     }
   }, [authed]);
 
@@ -51,7 +100,7 @@ export default function Admin({ onBack }) {
   };
 
   const handleSave = () => {
-    const settings = { projectName, clientName, projectAddress, projectRef, description };
+    const settings = { projectName, clientName, projectAddress, projectRef, description, stages };
     localStorage.setItem("draw-settings", JSON.stringify(settings));
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -61,6 +110,71 @@ export default function Admin({ onBack }) {
     sessionStorage.removeItem("draw-admin-session");
     setAuthed(false);
     setPw("");
+  };
+
+  // Stage management
+  const moveStage = (idx, dir) => {
+    setStages(prev => {
+      const next = [...prev];
+      const swap = idx + dir;
+      if (swap < 0 || swap >= next.length) return prev;
+      [next[idx], next[swap]] = [next[swap], next[idx]];
+      return next;
+    });
+  };
+  const toggleStage = (idx) => {
+    setStages(prev => prev.map((s, i) => i === idx ? { ...s, active: !s.active } : s));
+  };
+  const renameStage = (idx, label) => {
+    setStages(prev => prev.map((s, i) => i === idx ? { ...s, label } : s));
+  };
+  const changeColor = (idx, color, bg) => {
+    setStages(prev => prev.map((s, i) => i === idx ? { ...s, color, bg } : s));
+    setColorPickerOpen(null);
+  };
+  const removeStage = (idx) => {
+    if (!confirm(`Delete stage "${stages[idx].label}"?`)) return;
+    setStages(prev => prev.filter((_, i) => i !== idx));
+  };
+  const addStage = () => {
+    const label = newStageName.trim();
+    if (!label) return;
+    const usedColors = new Set(stages.map(s => s.color));
+    const preset = COLOR_PRESETS.find(c => !usedColors.has(c.color)) || COLOR_PRESETS[0];
+    const id = stageId(label, stages);
+    setStages(prev => [...prev, { id, label, color: preset.color, bg: preset.bg, active: true }]);
+    setNewStageName("");
+  };
+
+  const handleImport = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const targetStage = importStage || stages.find(s => s.active)?.id;
+    if (!targetStage) { alert("No active stage to import into."); return; }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const d = JSON.parse(ev.target.result);
+        const id = uid();
+        const project = {
+          id,
+          title: d.title || "Imported Drawing",
+          date: d.date || new Date().toISOString(),
+          phase: targetStage,
+          drawingImage: d.drawingImage || null,
+          annotations: d.annotations || [],
+          markupStrokes: d.markupStrokes || [],
+          imgSize: d.imgSize || { w: 1000, h: 700 },
+        };
+        const existing = loadProjects();
+        saveProjectsToStorage([...existing, project]);
+        const stageLabel = stages.find(s => s.id === targetStage)?.label || targetStage;
+        setImportResult(`Imported "${project.title}" into ${stageLabel}`);
+        setTimeout(() => setImportResult(null), 3000);
+      } catch { alert("Invalid project file"); }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
   };
 
   const inputStyle = {
@@ -73,6 +187,13 @@ export default function Admin({ onBack }) {
     fontSize: 12, fontFamily: "'DM Mono',monospace", color: C.muted,
     display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em",
   };
+
+  const smallBtn = (disabled) => ({
+    background: "transparent", border: `1px solid ${C.border}`, color: disabled ? C.border : C.muted,
+    width: 24, height: 24, borderRadius: 3, cursor: disabled ? "default" : "pointer",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    fontSize: 12, fontFamily: "'DM Mono',monospace", padding: 0, lineHeight: 1,
+  });
 
   // Login screen
   if (!authed) {
@@ -164,6 +285,122 @@ export default function Admin({ onBack }) {
               placeholder="Brief project description…"
               style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5 }} />
           </label>
+
+          {/* ---- Project Stages ---- */}
+          <div style={{ marginBottom: 24 }}>
+            <span style={labelStyle}>Project Stages</span>
+            <p style={{ fontSize: 12, color: C.muted, margin: "0 0 12px", lineHeight: 1.5 }}>
+              Stages define the progression of your project. Order matters — drawings move from top to bottom.
+            </p>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {stages.map((s, i) => (
+                <div key={s.id} style={{
+                  display: "flex", alignItems: "center", gap: 8, padding: "8px 10px",
+                  border: `1px solid ${C.border}`, borderRadius: 4,
+                  background: s.active ? C.paper : "#f5f2ed",
+                  opacity: s.active ? 1 : 0.55,
+                }}>
+                  {/* Color dot / picker trigger */}
+                  <div style={{ position: "relative" }}>
+                    <button onClick={() => setColorPickerOpen(colorPickerOpen === i ? null : i)} style={{
+                      width: 18, height: 18, borderRadius: "50%", background: s.color,
+                      border: "2px solid #fff", boxShadow: `0 0 0 1px ${C.border}`,
+                      cursor: "pointer", padding: 0, flexShrink: 0,
+                    }} />
+                    {colorPickerOpen === i && (
+                      <>
+                        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 99 }} onClick={() => setColorPickerOpen(null)} />
+                        <div style={{
+                          position: "absolute", top: "100%", left: 0, marginTop: 4, zIndex: 100,
+                          background: C.paper, border: `1px solid ${C.border}`, borderRadius: 4,
+                          padding: 6, display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 4,
+                          boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                        }}>
+                          {COLOR_PRESETS.map((cp, ci) => (
+                            <button key={ci} onClick={() => changeColor(i, cp.color, cp.bg)} style={{
+                              width: 22, height: 22, borderRadius: "50%", background: cp.color,
+                              border: s.color === cp.color ? "2px solid #1a1a1a" : "2px solid transparent",
+                              cursor: "pointer", padding: 0,
+                            }} />
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Label */}
+                  <input value={s.label} onChange={e => renameStage(i, e.target.value)}
+                    style={{
+                      flex: 1, fontSize: 13, fontFamily: "'DM Mono',monospace", fontWeight: 500,
+                      border: "none", background: "transparent", outline: "none",
+                      color: s.active ? C.ink : C.muted, padding: "2px 4px", minWidth: 0,
+                    }} />
+
+                  {/* Active toggle */}
+                  <button onClick={() => toggleStage(i)} title={s.active ? "Deactivate" : "Activate"}
+                    style={{
+                      ...smallBtn(false),
+                      background: s.active ? "#059669" : "transparent",
+                      color: s.active ? "#fff" : C.muted,
+                      border: s.active ? "1px solid #059669" : `1px solid ${C.border}`,
+                      fontSize: 10, fontWeight: 700,
+                    }}>{s.active ? "ON" : "OFF"}</button>
+
+                  {/* Reorder */}
+                  <button onClick={() => moveStage(i, -1)} disabled={i === 0} title="Move up"
+                    style={smallBtn(i === 0)}>↑</button>
+                  <button onClick={() => moveStage(i, 1)} disabled={i === stages.length - 1} title="Move down"
+                    style={smallBtn(i === stages.length - 1)}>↓</button>
+
+                  {/* Delete */}
+                  <button onClick={() => removeStage(i)} title="Delete stage"
+                    style={{ ...smallBtn(false), color: C.red, borderColor: `${C.red}40` }}>×</button>
+                </div>
+              ))}
+            </div>
+
+            {/* Add stage */}
+            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+              <input value={newStageName} onChange={e => setNewStageName(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && addStage()}
+                placeholder="New stage name…"
+                style={{ flex: 1, fontSize: 13, fontFamily: "'DM Mono',monospace", border: `1px solid ${C.border}`, borderRadius: 4, padding: "6px 10px", outline: "none" }} />
+              <button onClick={addStage} style={{
+                background: C.ink, color: "#fff", border: "none", padding: "6px 14px", borderRadius: 4,
+                fontSize: 12, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: "pointer",
+              }}>Add</button>
+            </div>
+          </div>
+
+          {/* ---- Import Drawing ---- */}
+          <div style={{ marginBottom: 24 }}>
+            <span style={labelStyle}>Import Drawing</span>
+            <p style={{ fontSize: 12, color: C.muted, margin: "0 0 12px", lineHeight: 1.5 }}>
+              Import a .json project file into a specific stage. Useful for loading templates or drawings from previous projects.
+            </p>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <select value={importStage} onChange={e => setImportStage(e.target.value)}
+                style={{
+                  flex: 1, fontSize: 13, fontFamily: "'DM Mono',monospace",
+                  border: `1px solid ${C.border}`, borderRadius: 4, padding: "8px 10px",
+                  outline: "none", background: C.paper, color: C.ink, minWidth: 140,
+                }}>
+                {stages.filter(s => s.active).map(s => (
+                  <option key={s.id} value={s.id}>{s.label}</option>
+                ))}
+              </select>
+              <button onClick={() => importRef.current?.click()} style={{
+                background: C.ink, color: "#fff", border: "none", padding: "8px 16px", borderRadius: 4,
+                fontSize: 12, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}>Choose .json file</button>
+              <input ref={importRef} type="file" accept=".json" onChange={handleImport} style={{ display: "none" }} />
+            </div>
+            {importResult && (
+              <p style={{ fontSize: 12, color: "#059669", margin: "8px 0 0", fontFamily: "'DM Mono',monospace" }}>{importResult}</p>
+            )}
+          </div>
 
           <button onClick={handleSave} style={{
             width: "100%", background: C.ink, color: "#fff", border: "none", padding: "12px 20px",

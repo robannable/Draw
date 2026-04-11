@@ -1,12 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
 const TOOLS = { SELECT: "select", ANNOTATE: "annotate", MARKUP: "markup" };
-const PHASES = {
-  design: { label: "Design", color: "#2563eb", bg: "#eff6ff" },
-  construction: { label: "Construction", color: "#d97706", bg: "#fffbeb" },
-  handover: { label: "Handover", color: "#059669", bg: "#ecfdf5" },
+export const NOTE_TYPES = {
+  question:    { label: "Question",    color: "#dc2626", bg: "#fef2f2" },
+  description: { label: "Description", color: "#059669", bg: "#ecfdf5" },
 };
-const PHASE_KEYS = Object.keys(PHASES);
+export const NOTE_TYPE_KEYS = Object.keys(NOTE_TYPES);
 const C = {
   ink: "#1a1a1a", red: "#c4342d", bg: "#f5f2ed", paper: "#ffffff",
   border: "#d4cfc7", muted: "#8a8478", highlight: "#fef3c7", clientMark: "#c4342d",
@@ -25,19 +24,19 @@ function hEntry(action, detail) {
   return { action, detail, timestamp: new Date().toISOString() };
 }
 
-function Pin({ number, x, y, active, phase, onClick, scale }) {
+function Pin({ number, x, y, active, noteType, onClick, scale }) {
   const sz = Math.max(20, 28 / scale), fs = Math.max(10, 13 / scale), sw = Math.max(1, 1.5 / scale);
-  const col = PHASES[phase]?.color || C.ink;
+  const col = NOTE_TYPES[noteType]?.color || C.ink;
   return (
     <g onClick={e => { e.stopPropagation(); onClick(); }} style={{ cursor: "pointer" }} transform={`translate(${x},${y})`}>
-      <circle r={sz / 2} fill={active ? C.red : col} stroke="#fff" strokeWidth={sw} />
+      <circle r={sz / 2} fill={col} stroke={active ? "#fbbf24" : "#fff"} strokeWidth={active ? sw * 2.5 : sw} />
       <text textAnchor="middle" dominantBaseline="central" fill="#fff" fontSize={fs} fontFamily="'DM Mono',monospace" fontWeight="500">{number}</text>
     </g>
   );
 }
 
-function PhaseBadge({ phase, small, onClick }) {
-  const p = PHASES[phase];
+function TypeBadge({ noteType, small, onClick }) {
+  const p = NOTE_TYPES[noteType];
   if (!p) return null;
   return (
     <span onClick={onClick} style={{
@@ -50,19 +49,22 @@ function PhaseBadge({ phase, small, onClick }) {
   );
 }
 
-function PhaseSelector({ value, onChange }) {
+function TypeSelector({ value, onChange }) {
   return (
     <div style={{ display: "flex", gap: 4 }}>
-      {PHASE_KEYS.map(k => (
-        <span key={k} onClick={() => onChange(k)} style={{
-          fontSize: 10, fontFamily: "'DM Mono',monospace", fontWeight: 500,
-          padding: "2px 8px", borderRadius: 3, cursor: "pointer",
-          background: value === k ? PHASES[k].color : "transparent",
-          color: value === k ? "#fff" : PHASES[k].color,
-          border: `1px solid ${PHASES[k].color}${value === k ? "" : "40"}`,
-          textTransform: "uppercase", letterSpacing: "0.03em",
-        }}>{PHASES[k].label}</span>
-      ))}
+      {NOTE_TYPE_KEYS.map(k => {
+        const p = NOTE_TYPES[k];
+        return (
+          <span key={k} onClick={() => onChange(k)} style={{
+            fontSize: 10, fontFamily: "'DM Mono',monospace", fontWeight: 500,
+            padding: "2px 8px", borderRadius: 3, cursor: "pointer",
+            background: value === k ? p.color : "transparent",
+            color: value === k ? "#fff" : p.color,
+            border: `1px solid ${p.color}${value === k ? "" : "40"}`,
+            textTransform: "uppercase", letterSpacing: "0.03em",
+          }}>{p.label}</span>
+        );
+      })}
     </div>
   );
 }
@@ -87,7 +89,7 @@ function HistoryTimeline({ history }) {
   );
 }
 
-function FootnoteCard({ annotation, active, onActivate, onUpdate, onDelete, onAddComment, onPhaseChange }) {
+function FootnoteCard({ annotation, active, onActivate, onUpdate, onDelete, onAddComment, onTypeChange }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(annotation.text);
   const [commentText, setCommentText] = useState("");
@@ -109,9 +111,9 @@ function FootnoteCard({ annotation, active, onActivate, onUpdate, onDelete, onAd
     setCommentText("");
   };
 
-  const cyclePhase = () => {
-    const idx = PHASE_KEYS.indexOf(annotation.phase || "design");
-    onPhaseChange(annotation.id, PHASE_KEYS[(idx + 1) % PHASE_KEYS.length]);
+  const cycleType = () => {
+    const idx = NOTE_TYPE_KEYS.indexOf(annotation.noteType || NOTE_TYPE_KEYS[0]);
+    onTypeChange(annotation.id, NOTE_TYPE_KEYS[(idx + 1) % NOTE_TYPE_KEYS.length]);
   };
 
   const comments = annotation.comments || [];
@@ -119,7 +121,7 @@ function FootnoteCard({ annotation, active, onActivate, onUpdate, onDelete, onAd
 
   return (
     <div ref={ref} onClick={onActivate} style={{
-      borderLeft: `3px solid ${active ? C.red : PHASES[annotation.phase]?.color || C.border}`,
+      borderLeft: `3px solid ${active ? C.red : NOTE_TYPES[annotation.noteType]?.color || C.border}`,
       background: active ? C.highlight : C.paper,
       padding: "14px 16px", cursor: "pointer", transition: "all 0.15s ease",
       borderBottom: `1px solid ${C.border}`,
@@ -128,19 +130,19 @@ function FootnoteCard({ annotation, active, onActivate, onUpdate, onDelete, onAd
         <span style={{
           display: "inline-flex", alignItems: "center", justifyContent: "center",
           width: 24, height: 24, borderRadius: "50%",
-          background: PHASES[annotation.phase]?.color || C.ink, color: "#fff",
+          background: NOTE_TYPES[annotation.noteType]?.color || C.ink, color: "#fff",
           fontSize: 12, fontFamily: "'DM Mono',monospace", fontWeight: 500, flexShrink: 0, marginTop: 1,
         }}>{annotation.number}</span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-            <PhaseBadge phase={annotation.phase || "design"} small onClick={e => { e.stopPropagation(); cyclePhase(); }} />
+            <TypeBadge noteType={annotation.noteType || NOTE_TYPE_KEYS[0]} small onClick={e => { e.stopPropagation(); cycleType(); }} />
           </div>
           {editing ? (
             <div>
               <textarea value={text} onChange={e => setText(e.target.value)} onClick={e => e.stopPropagation()} rows={3}
                 style={{ width: "100%", fontFamily: "'DM Sans',sans-serif", fontSize: 14, border: `1px solid ${C.border}`, borderRadius: 4, padding: "8px 10px", resize: "vertical", outline: "none", lineHeight: 1.5, boxSizing: "border-box" }} />
               <div style={{ marginTop: 6 }}>
-                <PhaseSelector value={annotation.phase || "design"} onChange={p => onPhaseChange(annotation.id, p)} />
+                <TypeSelector value={annotation.noteType || NOTE_TYPE_KEYS[0]} onChange={t => onTypeChange(annotation.id, t)} />
               </div>
               <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                 <button onClick={handleSave} style={btnS(C.ink, "#fff")}>Save</button>
@@ -214,7 +216,7 @@ function strokeToPath(pts) {
 }
 
 // --- Self-contained HTML export builder ---
-function buildOfflineHTML(title, date, annotations, markupStrokes, drawingImage, imgSize) {
+export function buildOfflineHTML(title, date, annotations, markupStrokes, drawingImage, imgSize, phases, phaseKeys) {
   const safeTitle = title.replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const dateStr = fmtDate(date);
   const exportDate = fmtDate(new Date());
@@ -258,11 +260,9 @@ body{font-family:'DM Sans',sans-serif;background:#f5f2ed;color:#1a1a1a}
 .hist-entry::before{content:'';position:absolute;left:4px;top:5px;width:5px;height:5px;border-radius:50%;background:#d4cfc7}
 .hist-entry:last-child::before{background:#1a1a1a}
 .toggle{background:none;border:none;color:#8a8478;font-size:12px;font-family:'DM Mono',monospace;cursor:pointer;text-decoration:underline;text-underline-offset:2px;padding:0;margin-right:10px;margin-top:8px}
-.ph-design{background:#eff6ff;color:#2563eb;border-color:#2563eb}
-.ph-construction{background:#fffbeb;color:#d97706;border-color:#d97706}
-.ph-handover{background:#ecfdf5;color:#059669;border-color:#059669}
-.pin-design{background:#2563eb}.pin-construction{background:#d97706}.pin-handover{background:#059669}
-.bl-design{border-left-color:#2563eb}.bl-construction{border-left-color:#d97706}.bl-handover{border-left-color:#059669}
+${Object.entries(phases).map(([k, p]) => `.ph-${k}{background:${p.bg};color:${p.color};border-color:${p.color}}
+.pin-${k}{background:${p.color}}
+.bl-${k}{border-left-color:${p.color}}`).join("\n")}
 @media(max-width:768px){
   .wrap{flex-direction:column}
   .notes-panel{width:100%;max-width:none;border-left:none;border-top:1px solid #d4cfc7;max-height:50vh}
@@ -287,7 +287,7 @@ body{font-family:'DM Sans',sans-serif;background:#f5f2ed;color:#1a1a1a}
 </div>
 <script>
 const D=${data};
-const PH={design:{label:"Design",color:"#2563eb",bg:"#eff6ff"},construction:{label:"Construction",color:"#d97706",bg:"#fffbeb"},handover:{label:"Handover",color:"#059669",bg:"#ecfdf5"}};
+const PH=${JSON.stringify(phases)};
 let af="all";
 const toggles={};
 function fD(d){const m=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];const dt=new Date(d);return dt.getDate()+" "+m[dt.getMonth()]+" "+dt.getFullYear()}
@@ -295,7 +295,7 @@ function fT(d){const dt=new Date(d);return String(dt.getHours()).padStart(2,"0")
 function init(){rf();rd();rn()}
 function rf(){
   const b=document.getElementById("fb");b.innerHTML="";
-  ["all","design","construction","handover"].forEach(f=>{
+  ${JSON.stringify(["all", ...phaseKeys])}.forEach(f=>{
     const e=document.createElement("button");e.className="fbtn"+(af===f?" active":"");
     e.textContent=f==="all"?"All":PH[f].label;
     e.onclick=()=>{af=f;rf();rn();rd()};b.appendChild(e);
@@ -311,9 +311,9 @@ function rd(){
     for(let i=1;i<s.points.length;i++){const p0=s.points[i-1],p1=s.points[i];d+=" Q "+p0.x+" "+p0.y+" "+(p0.x+p1.x)/2+" "+(p0.y+p1.y)/2}
     svg+='<path d="'+d+'" fill="none" stroke="'+s.color+'" stroke-width="3" stroke-linecap="round" opacity="0.7"/>';
   });
-  const vis=D.annotations.filter(a=>af==="all"||a.phase===af);
+  const vis=D.annotations.filter(a=>af==="all"||a.noteType===af);
   vis.forEach(a=>{
-    const c=PH[a.phase]?PH[a.phase].color:"#1a1a1a";
+    const c=PH[a.noteType]?PH[a.noteType].color:"#1a1a1a";
     svg+='<g transform="translate('+a.x+','+a.y+')" style="cursor:pointer" onclick="hl(\\''+a.id+'\\')">';
     svg+='<circle r="14" fill="'+c+'" stroke="#fff" stroke-width="1.5"/>';
     svg+='<text text-anchor="middle" dominant-baseline="central" fill="#fff" font-size="13" font-family="\\'DM Mono\\',monospace" font-weight="500">'+a.number+'</text></g>';
@@ -325,14 +325,14 @@ function tog(id,sec){
   const key=id+"-"+sec;toggles[key]=!toggles[key];rn();
 }
 function rn(){
-  const vis=D.annotations.filter(a=>af==="all"||a.phase===af);
+  const vis=D.annotations.filter(a=>af==="all"||a.noteType===af);
   document.getElementById("cnt").textContent=vis.length+" note"+(vis.length!==1?"s":"")+(af!=="all"?" ("+PH[af].label+")":"");
   document.getElementById("nl").innerHTML=vis.map(a=>{
-    const p=PH[a.phase]||PH.design;
+    const p=PH[a.noteType]||PH[Object.keys(PH)[0]];
     const cs=a.comments||[];const hs=a.history||[];
     const sc=toggles[a.id+"-c"]||false;
     const sh=toggles[a.id+"-h"]||false;
-    let html='<div class="note bl-'+a.phase+'" id="n-'+a.id+'" style="transition:background 0.3s"><div class="note-head"><span class="pin pin-'+a.phase+'">'+a.number+'</span><div style="flex:1"><span class="badge ph-'+a.phase+'" style="border:1px solid '+p.color+'30">'+p.label+'</span>';
+    let html='<div class="note bl-'+a.noteType+'" id="n-'+a.id+'" style="transition:background 0.3s"><div class="note-head"><span class="pin pin-'+a.noteType+'">'+a.number+'</span><div style="flex:1"><span class="badge ph-'+a.noteType+'" style="border:1px solid '+p.color+'30">'+p.label+'</span>';
     html+='<p class="note-text">'+(a.text||"<em style=\\"color:#8a8478\\">No note</em>")+'</p>';
     html+='<div style="margin-top:8px">';
     if(cs.length)html+='<button class="toggle" onclick="tog(\\''+a.id+'\\',\\'c\\')">'+(sc?"Hide":"Comments")+" ("+cs.length+")</button>";
@@ -372,8 +372,8 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
   const [isDrawing, setIsDrawing] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [showSetup, setShowSetup] = useState(!init.drawingImage);
-  const [phaseFilter, setPhaseFilter] = useState("all");
-  const [currentPhase, setCurrentPhase] = useState(init.phase || "design");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [currentNoteType, setCurrentNoteType] = useState("description");
   const [showExportMenu, setShowExportMenu] = useState(false);
 
   const [viewBox, setViewBox] = useState({ x: 0, y: 0, w: init.imgSize?.w || 1000, h: init.imgSize?.h || 700 });
@@ -386,14 +386,14 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
   const importRef = useRef(null);
 
   const scale = viewBox.w / (svgRef.current?.clientWidth || 1000);
-  const filteredAnnotations = phaseFilter === "all" ? annotations : annotations.filter(a => a.phase === phaseFilter);
+  const filteredAnnotations = typeFilter === "all" ? annotations : annotations.filter(a => a.noteType === typeFilter);
 
   // Auto-save back to index when data changes
   useEffect(() => {
     if (onSave && drawingImage) {
-      onSave({ title: projectTitle, date: projectDate, annotations, markupStrokes, drawingImage, imgSize, phase: currentPhase });
+      onSave({ title: projectTitle, date: projectDate, annotations, markupStrokes, drawingImage, imgSize });
     }
-  }, [projectTitle, projectDate, annotations, markupStrokes, drawingImage, imgSize, currentPhase]);
+  }, [projectTitle, projectDate, annotations, markupStrokes, drawingImage, imgSize]);
 
   const handleImageUpload = (e) => {
     const file = e.target.files?.[0];
@@ -426,7 +426,7 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
     const pt = getSVGPoint(pos.x, pos.y);
     if (tool === TOOLS.ANNOTATE) {
       const num = annotations.length > 0 ? Math.max(...annotations.map(a => a.number)) + 1 : 1;
-      const a = { id: uid(), number: num, x: pt.x, y: pt.y, text: "", phase: currentPhase, comments: [], history: [hEntry("Created", `Phase: ${PHASES[currentPhase].label}`)] };
+      const a = { id: uid(), number: num, x: pt.x, y: pt.y, text: "", noteType: currentNoteType, comments: [], history: [hEntry("Created", `${NOTE_TYPES[currentNoteType].label}`)] };
       setAnnotations(prev => [...prev, a]);
       setActiveAnnotation(a.id);
       return;
@@ -486,15 +486,15 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
       history: [...(a.history || []), hEntry(`Comment by ${author}`, text.slice(0, 60))]
     } : a));
   };
-  const changePhase = (id, phase) => {
+  const changeType = (id, noteType) => {
     setAnnotations(prev => prev.map(a => a.id === id ? {
-      ...a, phase,
-      history: [...(a.history || []), hEntry("Phase changed", PHASES[phase].label)]
+      ...a, noteType,
+      history: [...(a.history || []), hEntry("Type changed", NOTE_TYPES[noteType].label)]
     } : a));
   };
 
   const exportHTML = () => {
-    const html = buildOfflineHTML(projectTitle, projectDate, annotations, markupStrokes, drawingImage, imgSize);
+    const html = buildOfflineHTML(projectTitle, projectDate, annotations, markupStrokes, drawingImage, imgSize, NOTE_TYPES, NOTE_TYPE_KEYS);
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -546,10 +546,6 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
             <input value={projectTitle} onChange={e => setProjectTitle(e.target.value)}
               style={{ width: "100%", fontSize: 15, fontFamily: "'DM Sans',sans-serif", border: `1px solid ${C.border}`, padding: "10px 12px", borderRadius: 0, outline: "none", boxSizing: "border-box" }} />
           </label>
-          <label style={{ display: "block", marginBottom: 20 }}>
-            <span style={{ fontSize: 12, fontFamily: "'DM Mono',monospace", color: C.muted, display: "block", marginBottom: 6 }}>STARTING PHASE</span>
-            <PhaseSelector value={currentPhase} onChange={setCurrentPhase} />
-          </label>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button onClick={() => fileRef.current?.click()} style={{ flex: 1, minWidth: 140, background: C.ink, color: "#fff", border: "none", padding: "12px 20px", fontSize: 13, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: "pointer" }}>Upload Drawing</button>
             <button onClick={() => importRef.current?.click()} style={{ flex: 1, minWidth: 140, background: "transparent", color: C.ink, border: `1px solid ${C.border}`, padding: "12px 20px", fontSize: 13, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: "pointer" }}>Load Project</button>
@@ -582,11 +578,11 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", borderBottom: `1px solid ${C.border}`, background: C.paper, flexShrink: 0, flexWrap: "wrap", minHeight: 48 }}>
         {onBack && (
           <>
-            <button onClick={onBack} title="Back to projects" style={{
+            <button onClick={onBack} title="Back to index" style={{
               background: "transparent", color: C.ink, border: `1px solid ${C.border}`, borderRadius: 4,
               height: 36, display: "flex", alignItems: "center", gap: 4, padding: "0 10px",
               cursor: "pointer", fontSize: 12, fontFamily: "'DM Mono',monospace", fontWeight: 500,
-            }}>← Projects</button>
+            }}>Index</button>
             <div style={{ width: 1, height: 24, background: C.border, margin: "0 2px" }} />
           </>
         )}
@@ -597,7 +593,7 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
         {tool === TOOLS.ANNOTATE && (
           <>
             <div style={{ width: 1, height: 24, background: C.border, margin: "0 2px" }} />
-            <PhaseSelector value={currentPhase} onChange={setCurrentPhase} />
+            <TypeSelector value={currentNoteType} onChange={setCurrentNoteType} />
           </>
         )}
 
@@ -645,11 +641,11 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
             {drawingImage && <image href={drawingImage} x={0} y={0} width={imgSize.w} height={imgSize.h} style={{ pointerEvents: "none" }} />}
             {markupStrokes.map((s, i) => <path key={i} d={strokeToPath(s.points)} fill="none" stroke={s.color} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" opacity={0.7} style={{ pointerEvents: "none" }} />)}
             {currentStroke && <path d={strokeToPath(currentStroke.points)} fill="none" stroke={currentStroke.color} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" opacity={0.7} style={{ pointerEvents: "none" }} />}
-            {filteredAnnotations.map(a => <Pin key={a.id} number={a.number} x={a.x} y={a.y} active={activeAnnotation === a.id} phase={a.phase || "design"} onClick={() => setActiveAnnotation(a.id === activeAnnotation ? null : a.id)} scale={scale || 1} />)}
+            {filteredAnnotations.map(a => <Pin key={a.id} number={a.number} x={a.x} y={a.y} active={activeAnnotation === a.id} noteType={a.noteType || NOTE_TYPE_KEYS[0]} onClick={() => setActiveAnnotation(a.id === activeAnnotation ? null : a.id)} scale={scale || 1} />)}
           </svg>
           <div style={{ position: "absolute", bottom: 10, left: 10, fontSize: 11, fontFamily: "'DM Mono',monospace", color: C.muted, background: "rgba(255,255,255,0.85)", padding: "4px 8px", borderRadius: 3, pointerEvents: "none" }}>
             {tool === TOOLS.SELECT && "Drag to pan · Scroll to zoom"}
-            {tool === TOOLS.ANNOTATE && `Click to place ${PHASES[currentPhase].label.toLowerCase()} note`}
+            {tool === TOOLS.ANNOTATE && `Click to place ${NOTE_TYPES[currentNoteType].label.toLowerCase()}`}
             {tool === TOOLS.MARKUP && "Draw on the plan"}
           </div>
         </div>
@@ -665,34 +661,34 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
             )}
             <div style={{ fontSize: 12, fontFamily: "'DM Mono',monospace", color: C.muted, marginTop: 4, display: "flex", justifyContent: "space-between" }}>
               <span>{fmtDate(projectDate)}</span>
-              <span>{filteredAnnotations.length} note{filteredAnnotations.length !== 1 ? "s" : ""}{phaseFilter !== "all" ? ` (${PHASES[phaseFilter].label})` : ""}</span>
+              <span>{filteredAnnotations.length} note{filteredAnnotations.length !== 1 ? "s" : ""}{typeFilter !== "all" ? ` (${NOTE_TYPES[typeFilter].label})` : ""}</span>
             </div>
           </div>
 
-          {/* Phase filter */}
+          {/* Type filter */}
           <div style={{ display: "flex", gap: 4, padding: "10px 18px", borderBottom: `1px solid ${C.border}`, flexShrink: 0, flexWrap: "wrap" }}>
-            {["all", ...PHASE_KEYS].map(k => (
-              <span key={k} onClick={() => setPhaseFilter(k)} style={{
+            {["all", ...NOTE_TYPE_KEYS].map(k => (
+              <span key={k} onClick={() => setTypeFilter(k)} style={{
                 fontSize: 10, fontFamily: "'DM Mono',monospace", fontWeight: 500,
                 padding: "3px 10px", borderRadius: 3, cursor: "pointer",
-                background: phaseFilter === k ? C.ink : "transparent",
-                color: phaseFilter === k ? "#fff" : C.muted,
-                border: `1px solid ${phaseFilter === k ? C.ink : C.border}`,
+                background: typeFilter === k ? C.ink : "transparent",
+                color: typeFilter === k ? "#fff" : C.muted,
+                border: `1px solid ${typeFilter === k ? C.ink : C.border}`,
                 textTransform: "uppercase", letterSpacing: "0.03em",
-              }}>{k === "all" ? "All" : PHASES[k].label}</span>
+              }}>{k === "all" ? "All" : NOTE_TYPES[k].label}</span>
             ))}
           </div>
 
           <div style={{ flex: 1, overflowY: "auto" }}>
             {filteredAnnotations.length === 0 ? (
               <div style={{ padding: "40px 20px", textAlign: "center", color: C.muted, fontSize: 13, fontFamily: "'DM Mono',monospace", lineHeight: 1.7 }}>
-                {annotations.length === 0 ? <>No annotations yet.<br />Select ① and click the drawing.</> : <>No {PHASES[phaseFilter]?.label.toLowerCase()} notes.</>}
+                {annotations.length === 0 ? <>No annotations yet.<br />Select ① and click the drawing.</> : <>No {NOTE_TYPES[typeFilter]?.label.toLowerCase()} notes.</>}
               </div>
             ) : (
               filteredAnnotations.map(a => (
                 <FootnoteCard key={a.id} annotation={a} active={activeAnnotation === a.id}
                   onActivate={() => setActiveAnnotation(a.id === activeAnnotation ? null : a.id)}
-                  onUpdate={updateAnnotation} onDelete={deleteAnnotation} onAddComment={addComment} onPhaseChange={changePhase} />
+                  onUpdate={updateAnnotation} onDelete={deleteAnnotation} onAddComment={addComment} onTypeChange={changeType} />
               ))
             )}
           </div>
