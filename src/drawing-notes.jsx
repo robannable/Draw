@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 const TOOLS = { SELECT: "select", ANNOTATE: "annotate", MARKUP: "markup" };
 export const NOTE_TYPES = {
@@ -215,13 +216,48 @@ function strokeToPath(pts) {
   return d;
 }
 
+function parseSVG(svgText) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgText, 'image/svg+xml');
+  const svg = doc.documentElement;
+  if (svg.querySelector('parsererror')) return null;
+  svg.querySelectorAll('script').forEach(s => s.remove());
+  const vb = svg.getAttribute('viewBox');
+  let w, h;
+  if (vb) {
+    const parts = vb.split(/[\s,]+/).map(Number);
+    w = parts[2]; h = parts[3];
+  }
+  if (!w || isNaN(w)) w = parseFloat(svg.getAttribute('width')) || 1000;
+  if (!h || isNaN(h)) h = parseFloat(svg.getAttribute('height')) || 700;
+  if (!vb) svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.setAttribute('width', String(w));
+  svg.setAttribute('height', String(h));
+  return { svgContent: new XMLSerializer().serializeToString(svg), w, h };
+}
+
+async function renderPDFPage(pdfDoc, pageNum, maxDim) {
+  const page = await pdfDoc.getPage(pageNum);
+  const baseVp = page.getViewport({ scale: 1 });
+  const scale = Math.min(3, maxDim / Math.max(baseVp.width, baseVp.height));
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+  return { dataUrl: canvas.toDataURL('image/png'), w: viewport.width, h: viewport.height };
+}
+
 // --- Self-contained HTML export builder ---
-export function buildOfflineHTML(title, date, annotations, markupStrokes, drawingImage, imgSize, phases, phaseKeys) {
+export function buildOfflineHTML(title, date, annotations, markupStrokes, drawingImage, svgContent, imgSize, phases, phaseKeys) {
   const safeTitle = title.replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const dateStr = fmtDate(date);
   const exportDate = fmtDate(new Date());
 
-  const data = JSON.stringify({ title, date, annotations, markupStrokes, drawingImage, imgSize });
+  const exportData = { title, date, annotations, markupStrokes, imgSize };
+  if (svgContent) exportData.svgContent = svgContent;
+  else exportData.drawingImage = drawingImage;
+  const data = JSON.stringify(exportData).replace(/<\//g, '<\\/');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -304,7 +340,8 @@ function rf(){
 function rd(){
   const dp=document.getElementById("dp");
   let svg='<svg viewBox="0 0 '+D.imgSize.w+' '+D.imgSize.h+'" xmlns="http://www.w3.org/2000/svg">';
-  if(D.drawingImage)svg+='<image href="'+D.drawingImage+'" width="'+D.imgSize.w+'" height="'+D.imgSize.h+'"/>';
+  if(D.svgContent)svg+=D.svgContent;
+  else if(D.drawingImage)svg+='<image href="'+D.drawingImage+'" width="'+D.imgSize.w+'" height="'+D.imgSize.h+'"/>';
   (D.markupStrokes||[]).forEach(s=>{
     if(s.points.length<2)return;
     let d="M "+s.points[0].x+" "+s.points[0].y;
@@ -371,12 +408,14 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
   const [currentStroke, setCurrentStroke] = useState(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
-  const [showSetup, setShowSetup] = useState(!init.drawingImage);
+  const [showSetup, setShowSetup] = useState(!init.drawingImage && !init.svgContent);
   const [typeFilter, setTypeFilter] = useState("all");
   const [currentNoteType, setCurrentNoteType] = useState("description");
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [markupColor, setMarkupColor] = useState("#c4342d");
   const [markupThickness, setMarkupThickness] = useState(3);
+  const [svgContent, setSvgContent] = useState(init.svgContent || null);
+  const [pdfPages, setPdfPages] = useState(null);
 
   const [viewBox, setViewBox] = useState({ x: 0, y: 0, w: init.imgSize?.w || 1000, h: init.imgSize?.h || 700 });
   const [isPanning, setIsPanning] = useState(false);
@@ -386,32 +425,100 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
   const svgRef = useRef(null);
   const fileRef = useRef(null);
   const importRef = useRef(null);
+  const svgContentRef = useRef(null);
+  const pdfDocRef = useRef(null);
 
   const scale = viewBox.w / (svgRef.current?.clientWidth || 1000);
   const filteredAnnotations = typeFilter === "all" ? annotations : annotations.filter(a => a.noteType === typeFilter);
 
+  // Inline SVG rendering
+  useEffect(() => {
+    const el = svgContentRef.current;
+    if (!el) return;
+    if (svgContent) {
+      el.innerHTML = svgContent;
+      const nested = el.querySelector('svg');
+      if (nested) {
+        nested.setAttribute('width', String(imgSize.w));
+        nested.setAttribute('height', String(imgSize.h));
+      }
+    } else {
+      el.innerHTML = '';
+    }
+  }, [svgContent, imgSize.w, imgSize.h]);
+
   // Auto-save back to index when data changes
   useEffect(() => {
-    if (onSave && drawingImage) {
-      onSave({ title: projectTitle, date: projectDate, annotations, markupStrokes, drawingImage, imgSize });
+    if (onSave && (drawingImage || svgContent)) {
+      onSave({ title: projectTitle, date: projectDate, annotations, markupStrokes, drawingImage, svgContent, imgSize });
     }
-  }, [projectTitle, projectDate, annotations, markupStrokes, drawingImage, imgSize]);
+  }, [projectTitle, projectDate, annotations, markupStrokes, drawingImage, svgContent, imgSize]);
 
   const handleImageUpload = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // PDF
+    if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+      file.arrayBuffer().then(async (buf) => {
+        const pdfjsLib = await import('pdfjs-dist');
+        pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
+        const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+        if (doc.numPages === 1) {
+          const { dataUrl, w, h } = await renderPDFPage(doc, 1, 4000);
+          setImgSize({ w, h }); setViewBox({ x: 0, y: 0, w, h });
+          setDrawingImage(dataUrl); setSvgContent(null); setShowSetup(false);
+        } else {
+          pdfDocRef.current = doc;
+          const previews = [];
+          for (let i = 1; i <= doc.numPages; i++) {
+            previews.push(await renderPDFPage(doc, i, 300));
+          }
+          setPdfPages(previews);
+        }
+      });
+      return;
+    }
+
+    // SVG
+    if (file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg')) {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const parsed = parseSVG(ev.target.result);
+        if (!parsed) { alert("Could not parse SVG file"); return; }
+        setSvgContent(parsed.svgContent);
+        setImgSize({ w: parsed.w, h: parsed.h });
+        setViewBox({ x: 0, y: 0, w: parsed.w, h: parsed.h });
+        // Data URL for thumbnails
+        const urlReader = new FileReader();
+        urlReader.onload = (ev2) => { setDrawingImage(ev2.target.result); setShowSetup(false); };
+        urlReader.readAsDataURL(file);
+      };
+      reader.readAsText(file);
+      return;
+    }
+
+    // Raster image (PNG, JPG, WebP, etc.)
     const reader = new FileReader();
     reader.onload = (ev) => {
       const img = new Image();
       img.onload = () => {
         setImgSize({ w: img.naturalWidth, h: img.naturalHeight });
         setViewBox({ x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight });
-        setDrawingImage(ev.target.result);
-        setShowSetup(false);
+        setDrawingImage(ev.target.result); setSvgContent(null); setShowSetup(false);
       };
       img.src = ev.target.result;
     };
     reader.readAsDataURL(file);
+  };
+
+  const handlePDFPageSelect = async (pageNum) => {
+    if (!pdfDocRef.current) return;
+    const { dataUrl, w, h } = await renderPDFPage(pdfDocRef.current, pageNum, 4000);
+    setImgSize({ w, h }); setViewBox({ x: 0, y: 0, w, h });
+    setDrawingImage(dataUrl); setSvgContent(null);
+    setPdfPages(null); pdfDocRef.current = null;
+    setShowSetup(false);
   };
 
   const getSVGPoint = useCallback((cx, cy) => {
@@ -505,7 +612,7 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
   };
 
   const exportHTML = () => {
-    const html = buildOfflineHTML(projectTitle, projectDate, annotations, markupStrokes, drawingImage, imgSize, NOTE_TYPES, NOTE_TYPE_KEYS);
+    const html = buildOfflineHTML(projectTitle, projectDate, annotations, markupStrokes, drawingImage, svgContent, imgSize, NOTE_TYPES, NOTE_TYPE_KEYS);
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -514,7 +621,7 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
   };
 
   const exportJSON = () => {
-    const data = { title: projectTitle, date: projectDate, annotations, markupStrokes, drawingImage, imgSize, exportedAt: new Date().toISOString() };
+    const data = { title: projectTitle, date: projectDate, annotations, markupStrokes, drawingImage, svgContent, imgSize, exportedAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -533,7 +640,8 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
         if (d.date) setProjectDate(d.date);
         if (d.annotations) setAnnotations(d.annotations);
         if (d.markupStrokes) setMarkupStrokes(d.markupStrokes);
-        if (d.drawingImage) { setDrawingImage(d.drawingImage); setShowSetup(false); }
+        if (d.svgContent) setSvgContent(d.svgContent); else setSvgContent(null);
+        if (d.drawingImage || d.svgContent) { if (d.drawingImage) setDrawingImage(d.drawingImage); setShowSetup(false); }
         if (d.imgSize) { setImgSize(d.imgSize); setViewBox({ x: 0, y: 0, w: d.imgSize.w, h: d.imgSize.h }); }
       } catch { alert("Invalid project file"); }
     };
@@ -542,8 +650,37 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
 
   const sw = (thickness) => Math.max(1, (thickness || 3) / scale);
 
+  // --- PDF page picker ---
+  if (pdfPages) {
+    return (
+      <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans',sans-serif", padding: 20 }}>
+        <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet" />
+        <div style={{ background: C.paper, border: `1px solid ${C.border}`, maxWidth: 720, width: "100%", padding: "40px 36px" }}>
+          <h1 style={{ fontFamily: "'DM Mono',monospace", fontSize: 18, fontWeight: 500, marginBottom: 6, color: C.ink }}>Select Page</h1>
+          <p style={{ fontSize: 14, color: C.muted, margin: "0 0 20px", lineHeight: 1.5 }}>
+            This PDF has {pdfPages.length} pages. Select a page to annotate.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 12 }}>
+            {pdfPages.map((page, i) => (
+              <div key={i} onClick={() => handlePDFPageSelect(i + 1)} style={{
+                cursor: "pointer", border: `2px solid ${C.border}`, borderRadius: 4, padding: 4,
+                background: "#fff", transition: "border-color 0.15s",
+              }} onMouseEnter={e => e.currentTarget.style.borderColor = C.ink} onMouseLeave={e => e.currentTarget.style.borderColor = C.border}>
+                <img src={page.dataUrl} style={{ width: "100%", display: "block" }} />
+                <div style={{ textAlign: "center", fontSize: 11, fontFamily: "'DM Mono',monospace", color: C.muted, padding: "4px 0" }}>
+                  Page {i + 1}
+                </div>
+              </div>
+            ))}
+          </div>
+          <button onClick={() => { setPdfPages(null); pdfDocRef.current = null; }} style={{ marginTop: 16, background: "transparent", color: C.muted, border: `1px solid ${C.border}`, padding: "8px 16px", fontSize: 13, fontFamily: "'DM Mono',monospace", cursor: "pointer" }}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
   // --- Setup screen ---
-  if (showSetup && !drawingImage) {
+  if (showSetup && !drawingImage && !svgContent) {
     return (
       <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans',sans-serif", padding: 20 }}>
         <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet" />
@@ -561,10 +698,10 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
             <button onClick={() => fileRef.current?.click()} style={{ flex: 1, minWidth: 140, background: C.ink, color: "#fff", border: "none", padding: "12px 20px", fontSize: 13, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: "pointer" }}>Upload Drawing</button>
             <button onClick={() => importRef.current?.click()} style={{ flex: 1, minWidth: 140, background: "transparent", color: C.ink, border: `1px solid ${C.border}`, padding: "12px 20px", fontSize: 13, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: "pointer" }}>Load Project</button>
           </div>
-          <input ref={fileRef} type="file" accept="image/*" onChange={handleImageUpload} style={{ display: "none" }} />
+          <input ref={fileRef} type="file" accept="image/*,.pdf" onChange={handleImageUpload} style={{ display: "none" }} />
           <input ref={importRef} type="file" accept=".json" onChange={importProject} style={{ display: "none" }} />
           <p style={{ fontSize: 11, color: C.muted, marginTop: 24, lineHeight: 1.6, fontFamily: "'DM Mono',monospace" }}>
-            Accepts PNG, JPG, SVG. Everything stays in your browser.
+            Accepts PNG, JPG, SVG, PDF. Everything stays in your browser.
           </p>
         </div>
       </div>
@@ -669,7 +806,7 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
             style={{ width: "100%", height: "100%", cursor: tool === TOOLS.SELECT ? (isPanning ? "grabbing" : "grab") : "crosshair", touchAction: "none", userSelect: "none" }}
             onMouseDown={handleDown} onMouseMove={handleMove} onMouseUp={handleUp} onMouseLeave={handleUp}
             onTouchStart={handleDown} onTouchMove={handleMove} onTouchEnd={handleUp} onWheel={handleWheel}>
-            {drawingImage && <image href={drawingImage} x={0} y={0} width={imgSize.w} height={imgSize.h} style={{ pointerEvents: "none" }} />}
+            {svgContent ? <g ref={svgContentRef} style={{ pointerEvents: "none" }} /> : drawingImage ? <image href={drawingImage} x={0} y={0} width={imgSize.w} height={imgSize.h} style={{ pointerEvents: "none" }} /> : null}
             {markupStrokes.map((s, i) => <path key={i} d={strokeToPath(s.points)} fill="none" stroke={s.color} strokeWidth={sw(s.thickness)} strokeLinecap="round" strokeLinejoin="round" opacity={0.7} style={{ pointerEvents: "none" }} />)}
             {currentStroke && <path d={strokeToPath(currentStroke.points)} fill="none" stroke={currentStroke.color} strokeWidth={sw(currentStroke.thickness)} strokeLinecap="round" strokeLinejoin="round" opacity={0.7} style={{ pointerEvents: "none" }} />}
             {filteredAnnotations.map(a => <Pin key={a.id} number={a.number} x={a.x} y={a.y} active={activeAnnotation === a.id} noteType={a.noteType || NOTE_TYPE_KEYS[0]} onClick={() => setActiveAnnotation(a.id === activeAnnotation ? null : a.id)} scale={scale || 1} />)}

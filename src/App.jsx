@@ -174,10 +174,22 @@ export default function App() {
     const drawings = byPhase[stage.id] || [];
     if (drawings.length === 0) return;
     const zip = new JSZip();
+    const imgFolder = zip.folder("originals");
     drawings.forEach(p => {
-      const html = buildOfflineHTML(p.title, p.date, p.annotations || [], p.markupStrokes || [], p.drawingImage, p.imgSize || { w: 1000, h: 700 }, NOTE_TYPES, NOTE_TYPE_KEYS);
-      const filename = `${p.title.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9-_]/g, "").toLowerCase()}-archive.html`;
-      zip.file(filename, html);
+      const html = buildOfflineHTML(p.title, p.date, p.annotations || [], p.markupStrokes || [], p.drawingImage, p.svgContent || null, p.imgSize || { w: 1000, h: 700 }, NOTE_TYPES, NOTE_TYPE_KEYS);
+      const baseName = p.title.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9-_]/g, "").toLowerCase();
+      zip.file(`${baseName}-archive.html`, html);
+      if (p.svgContent) {
+        imgFolder.file(`${baseName}.svg`, p.svgContent);
+      } else if (p.drawingImage) {
+        const match = p.drawingImage.match(/^data:image\/([\w+]+);base64,(.+)$/);
+        if (match) {
+          let ext = match[1];
+          if (ext === "jpeg") ext = "jpg";
+          else if (ext === "svg+xml") ext = "svg";
+          imgFolder.file(`${baseName}.${ext}`, match[2], { base64: true });
+        }
+      }
     });
     const blob = await zip.generateAsync({ type: "blob" });
     const url = URL.createObjectURL(blob);
