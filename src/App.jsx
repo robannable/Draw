@@ -39,7 +39,7 @@ function Thumbnail({ drawingImage, imgSize, annotations, markupStrokes }) {
           d += `Q${pts[j].x},${pts[j].y},${mx},${my}`;
         }
         d += `L${pts[pts.length-1].x},${pts[pts.length-1].y}`;
-        return <path key={i} d={d} fill="none" stroke={s.color} strokeWidth={Math.max(2, w / 300)} strokeLinecap="round" opacity={0.7} />;
+        return <path key={i} d={d} fill="none" stroke={s.color} strokeWidth={Math.max(2, (s.thickness || 3) * (w / 1000))} strokeLinecap="round" opacity={0.7} />;
       })}
       {(annotations || []).map(a => {
         const col = NOTE_TYPES[a.noteType]?.color || C.ink;
@@ -240,9 +240,9 @@ export default function App() {
       )}
 
       {/* Phase columns */}
-      <div style={{ display: "flex", gap: 0, minHeight: "calc(100vh - 80px)" }}>
+      <div className="stage-columns" style={{ display: "flex", gap: 0, minHeight: "calc(100vh - 80px)" }}>
         {activeStages.map((stage, i) => (
-          <div key={stage.id} style={{
+          <div key={stage.id} className="stage-col" style={{
             flex: 1, minWidth: 0, padding: "24px 20px",
             borderRight: i < activeStages.length - 1 ? `1px solid ${C.border}` : "none",
           }}>
@@ -257,13 +257,13 @@ export default function App() {
                 <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: C.muted }}>{byPhase[stage.id]?.length || 0}</span>
               </div>
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => exportStage(stage)} title={`Export all ${stage.label} drawings as zip`} style={{
+                <button onClick={() => exportStage(stage)} title={`Export all ${stage.label} drawings as zip`} className="stage-btn" style={{
                   background: "transparent", color: stage.color, border: `1px solid ${stage.color}40`,
                   width: 28, height: 28, borderRadius: 4, cursor: "pointer",
                   fontSize: 13, fontWeight: 700, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center",
                   fontFamily: "'DM Mono',monospace",
                 }}>&gt;&gt;</button>
-                <button onClick={() => startNew(stage.id)} title={`New ${stage.label} drawing`} style={{
+                <button onClick={() => startNew(stage.id)} title={`New ${stage.label} drawing`} className="stage-btn" style={{
                   background: "transparent", color: stage.color, border: `1px solid ${stage.color}40`,
                   width: 28, height: 28, borderRadius: 4, cursor: "pointer",
                   fontSize: 18, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center",
@@ -295,7 +295,7 @@ export default function App() {
                   }} onMouseEnter={e => e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.08)"}
                      onMouseLeave={e => e.currentTarget.style.boxShadow = "none"}>
                     {/* Thumbnail */}
-                    <div style={{
+                    <div className="card-thumb" style={{
                       width: 120, minHeight: 80, flexShrink: 0, background: "#e8e4de", overflow: "hidden",
                       display: "flex", alignItems: "center", justifyContent: "center",
                     }}>
@@ -316,7 +316,7 @@ export default function App() {
                       <div style={{ display: "flex", gap: 4, alignItems: "center", position: "relative" }}>
                         {otherStages.length > 0 && (
                           <>
-                            <button onClick={(e) => { e.stopPropagation(); setMovePopup(movePopup === p.id ? null : p.id); }} title="Move to another stage" style={{
+                            <button onClick={(e) => { e.stopPropagation(); setMovePopup(movePopup === p.id ? null : p.id); }} title="Move to another stage" className="card-action-btn" style={{
                               background: "none", border: "none", color: "#059669", cursor: "pointer",
                               fontSize: 16, fontWeight: 700, padding: "2px 4px", lineHeight: 1, opacity: 0.6,
                               fontFamily: "'DM Mono',monospace",
@@ -332,6 +332,7 @@ export default function App() {
                                 <div style={{ padding: "4px 12px 6px", fontSize: 10, fontFamily: "'DM Mono',monospace", color: C.muted, textTransform: "uppercase", letterSpacing: "0.04em" }}>Move to</div>
                                 {otherStages.map(s => (
                                   <div key={s.id} onClick={(e) => { moveProject(p.id, s.id, e); setMovePopup(null); }}
+                                    className="move-popup-item"
                                     style={{
                                       padding: "6px 12px", fontSize: 12, fontFamily: "'DM Mono',monospace",
                                       cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
@@ -346,7 +347,7 @@ export default function App() {
                             )}
                           </>
                         )}
-                        <button onClick={(e) => deleteProject(p.id, e)} title="Delete drawing" style={{
+                        <button onClick={(e) => deleteProject(p.id, e)} title="Delete drawing" className="card-action-btn" style={{
                           background: "none", border: "none", color: C.red, cursor: "pointer",
                           fontSize: 16, padding: "2px 4px", lineHeight: 1, opacity: 0.6,
                         }} onMouseEnter={e => e.currentTarget.style.opacity = 1}
@@ -360,6 +361,41 @@ export default function App() {
           </div>
         ))}
       </div>
+
+      <style>{`
+        @media (max-width: 768px) {
+          .stage-columns {
+            flex-direction: column !important;
+            min-height: auto !important;
+          }
+          .stage-col {
+            border-right: none !important;
+            border-bottom: 1px solid ${C.border};
+            padding: 16px 14px !important;
+          }
+          .stage-col:last-child {
+            border-bottom: none;
+          }
+          .stage-btn {
+            width: 36px !important;
+            height: 36px !important;
+            font-size: 16px !important;
+          }
+          .card-thumb {
+            width: 100px !important;
+            min-height: 70px !important;
+          }
+          .card-action-btn {
+            font-size: 20px !important;
+            padding: 6px 8px !important;
+            opacity: 0.8 !important;
+          }
+          .move-popup-item {
+            padding: 10px 14px !important;
+            font-size: 14px !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

@@ -309,7 +309,7 @@ function rd(){
     if(s.points.length<2)return;
     let d="M "+s.points[0].x+" "+s.points[0].y;
     for(let i=1;i<s.points.length;i++){const p0=s.points[i-1],p1=s.points[i];d+=" Q "+p0.x+" "+p0.y+" "+(p0.x+p1.x)/2+" "+(p0.y+p1.y)/2}
-    svg+='<path d="'+d+'" fill="none" stroke="'+s.color+'" stroke-width="3" stroke-linecap="round" opacity="0.7"/>';
+    svg+='<path d="'+d+'" fill="none" stroke="'+s.color+'" stroke-width="'+(s.thickness||3)+'" stroke-linecap="round" opacity="0.7"/>';
   });
   const vis=D.annotations.filter(a=>af==="all"||a.noteType===af);
   vis.forEach(a=>{
@@ -375,6 +375,8 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
   const [typeFilter, setTypeFilter] = useState("all");
   const [currentNoteType, setCurrentNoteType] = useState("description");
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [markupColor, setMarkupColor] = useState("#c4342d");
+  const [markupThickness, setMarkupThickness] = useState(3);
 
   const [viewBox, setViewBox] = useState({ x: 0, y: 0, w: init.imgSize?.w || 1000, h: init.imgSize?.h || 700 });
   const [isPanning, setIsPanning] = useState(false);
@@ -415,6 +417,14 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
   const getSVGPoint = useCallback((cx, cy) => {
     const svg = svgRef.current;
     if (!svg) return { x: 0, y: 0 };
+    const pt = svg.createSVGPoint();
+    pt.x = cx; pt.y = cy;
+    const ctm = svg.getScreenCTM();
+    if (ctm) {
+      const svgPt = pt.matrixTransform(ctm.inverse());
+      return { x: svgPt.x, y: svgPt.y };
+    }
+    // Fallback
     const r = svg.getBoundingClientRect();
     return { x: viewBox.x + ((cx - r.left) / r.width) * viewBox.w, y: viewBox.y + ((cy - r.top) / r.height) * viewBox.h };
   }, [viewBox]);
@@ -431,7 +441,7 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
       setActiveAnnotation(a.id);
       return;
     }
-    if (tool === TOOLS.MARKUP) { setIsDrawing(true); setCurrentStroke({ points: [pt], color: C.clientMark }); return; }
+    if (tool === TOOLS.MARKUP) { setIsDrawing(true); setCurrentStroke({ points: [pt], color: markupColor, thickness: markupThickness }); return; }
     setIsPanning(true);
     setPanStart({ x: pos.x, y: pos.y, vx: viewBox.x, vy: viewBox.y });
   };
@@ -467,7 +477,8 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
     const mx = (e.clientX - r.left) / r.width, my = (e.clientY - r.top) / r.height;
     setViewBox(prev => {
       const nw = Math.min(Math.max(prev.w * f, 200), imgSize.w * 3);
-      const nh = Math.min(Math.max(prev.h * f, 140), imgSize.h * 3);
+      const ratio = nw / prev.w;
+      const nh = prev.h * ratio;
       return { x: prev.x + (prev.w - nw) * mx, y: prev.y + (prev.h - nh) * my, w: nw, h: nh };
     });
   };
@@ -529,7 +540,7 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
     reader.readAsText(file);
   };
 
-  const sw = Math.max(2, 3 / scale);
+  const sw = (thickness) => Math.max(1, (thickness || 3) / scale);
 
   // --- Setup screen ---
   if (showSetup && !drawingImage) {
@@ -600,6 +611,26 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
         {tool === TOOLS.MARKUP && (
           <>
             <div style={{ width: 1, height: 24, background: C.border, margin: "0 2px" }} />
+            {["#c4342d", "#2563eb"].map(c => (
+              <span key={c} onClick={() => setMarkupColor(c)} style={{
+                width: 22, height: 22, borderRadius: "50%", background: c, cursor: "pointer",
+                border: markupColor === c ? "2px solid #1a1a1a" : "2px solid transparent",
+                boxShadow: markupColor === c ? `0 0 0 1px ${C.paper}` : "none",
+              }} />
+            ))}
+            <div style={{ width: 1, height: 24, background: C.border, margin: "0 2px" }} />
+            {[2, 5, 10].map(t => (
+              <span key={t} onClick={() => setMarkupThickness(t)} title={`${t === 2 ? "Fine" : t === 5 ? "Medium" : "Thick"}`} style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: 24, height: 24, cursor: "pointer", borderRadius: 4,
+                border: markupThickness === t ? `1px solid ${C.ink}` : `1px solid transparent`,
+              }}>
+                <span style={{
+                  width: 14, height: t, borderRadius: t, background: markupColor,
+                }} />
+              </span>
+            ))}
+            <div style={{ width: 1, height: 24, background: C.border, margin: "0 2px" }} />
             <button onClick={() => setMarkupStrokes(p => p.slice(0, -1))} style={linkBtn}>Undo</button>
             <button onClick={() => setMarkupStrokes([])} style={linkBtn}>Clear</button>
           </>
@@ -639,8 +670,8 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
             onMouseDown={handleDown} onMouseMove={handleMove} onMouseUp={handleUp} onMouseLeave={handleUp}
             onTouchStart={handleDown} onTouchMove={handleMove} onTouchEnd={handleUp} onWheel={handleWheel}>
             {drawingImage && <image href={drawingImage} x={0} y={0} width={imgSize.w} height={imgSize.h} style={{ pointerEvents: "none" }} />}
-            {markupStrokes.map((s, i) => <path key={i} d={strokeToPath(s.points)} fill="none" stroke={s.color} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" opacity={0.7} style={{ pointerEvents: "none" }} />)}
-            {currentStroke && <path d={strokeToPath(currentStroke.points)} fill="none" stroke={currentStroke.color} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" opacity={0.7} style={{ pointerEvents: "none" }} />}
+            {markupStrokes.map((s, i) => <path key={i} d={strokeToPath(s.points)} fill="none" stroke={s.color} strokeWidth={sw(s.thickness)} strokeLinecap="round" strokeLinejoin="round" opacity={0.7} style={{ pointerEvents: "none" }} />)}
+            {currentStroke && <path d={strokeToPath(currentStroke.points)} fill="none" stroke={currentStroke.color} strokeWidth={sw(currentStroke.thickness)} strokeLinecap="round" strokeLinejoin="round" opacity={0.7} style={{ pointerEvents: "none" }} />}
             {filteredAnnotations.map(a => <Pin key={a.id} number={a.number} x={a.x} y={a.y} active={activeAnnotation === a.id} noteType={a.noteType || NOTE_TYPE_KEYS[0]} onClick={() => setActiveAnnotation(a.id === activeAnnotation ? null : a.id)} scale={scale || 1} />)}
           </svg>
           <div style={{ position: "absolute", bottom: 10, left: 10, fontSize: 11, fontFamily: "'DM Mono',monospace", color: C.muted, background: "rgba(255,255,255,0.85)", padding: "4px 8px", borderRadius: 3, pointerEvents: "none" }}>
