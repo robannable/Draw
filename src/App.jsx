@@ -115,14 +115,14 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [settings, setSettings] = useState(getSettings);
   const [clientAuthed, setClientAuthed] = useState(() => sessionStorage.getItem("draw-client-session") === "true");
-  const [route, setRoute] = useState(() => window.location.hash);
+  const [route, setRoute] = useState(() => window.location.pathname);
   const importRef = useRef(null);
 
-  // Hash routing
+  // Path routing
   useEffect(() => {
-    const onHash = () => setRoute(window.location.hash);
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
+    const onPop = () => setRoute(window.location.pathname);
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
   }, []);
 
   // Refresh settings when coming back from admin
@@ -133,8 +133,9 @@ export default function App() {
   const projectName = settings.projectName || "Drawing Notes";
 
   // Admin route
-  if (route === "#/admin") {
-    return <Admin onBack={() => { window.location.hash = ""; setRoute(""); }} />;
+  if (route.startsWith("/admin")) {
+    const navigateHome = () => { window.history.pushState({}, "", "/"); setRoute("/"); };
+    return <Admin onBack={navigateHome} />;
   }
 
   // Client login gate
