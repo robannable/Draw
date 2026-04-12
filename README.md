@@ -12,6 +12,7 @@ Built for architects, designers, and project managers who need a simple, self-ho
 - **Project stages** — organise drawings into custom stages (e.g. Design, Construction, Handover) with drag-and-drop movement between them
 - **Admin setup** — password-protected admin page for project configuration, stage management, and drawing import
 - **Client login** — separate password for client access to the index
+- **Shared backend** — all clients work against a single shared dataset, so multiple people can collaborate remotely
 - **HTML export** — export individual drawings or entire stages as self-contained HTML archives (zip)
 - **JSON export/import** — back up and restore drawing data
 - **Offline-ready archives** — exported HTML files work without a server, with all data embedded
@@ -29,19 +30,21 @@ cp .env.example .env
 Edit `.env` to set your passwords:
 
 ```
-VITE_ADMIN_PASSWORD=your-admin-password
-VITE_CLIENT_PASSWORD=your-client-password
+PORT=3001
+CLIENT_PASSWORD=your-client-password
+ADMIN_PASSWORD=your-admin-password
 ```
 
-Start the dev server:
+Start the API and the Vite dev server in two terminals:
 
 ```sh
-npm run dev
+npm run server     # terminal 1 — API on :3001
+npm run dev        # terminal 2 — Vite on :3000 (proxies /api to 3001)
 ```
 
-Open `http://localhost:3000` for the client view, or `http://localhost:3000/admin` for project setup.
+Open `http://localhost:3000` for the client view, or `http://localhost:3000/#admin` for project setup.
 
-## Deploy to a web server
+## Deploy to a VPS
 
 Build the static files:
 
@@ -49,46 +52,44 @@ Build the static files:
 npm run build
 ```
 
-This produces a `dist/` folder. Upload its contents to any web server or static hosting.
+Then run the Node API as a long-running process (systemd, pm2, or similar):
 
-**Important:** because the app uses client-side routing (pathname-based, not hash), your web server must serve `index.html` for all routes. Examples:
+```sh
+NODE_ENV=production npm run start
+```
 
-**Nginx:**
+The API listens on `PORT` (default 3001) and reads/writes `server/data.json`.
+
+### Fronting with nginx (recommended)
 
 ```nginx
 server {
     listen 80;
-    root /var/www/draw;
+    server_name your-domain.com;
+    root /var/www/draw/dist;
     index index.html;
 
+    # SPA fallback (only needed if you use non-hash deep links; hash routing works without this)
     location / {
         try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 }
 ```
 
-**Apache** (`.htaccess` in the `dist/` folder):
+### Without a fronting web server
 
-```apache
-RewriteEngine On
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule ^ index.html [L]
-```
-
-**Caddy:**
-
-```
-your-domain.com {
-    root * /var/www/draw
-    try_files {path} /index.html
-    file_server
-}
-```
+Set `SERVE_STATIC=true` in `.env` and Node will serve the built `dist/` directly. Not recommended for production but handy for quick trials.
 
 ## Starting a new project
 
-1. Visit `/admin` and enter the admin password
+1. Visit `/#admin` and enter the admin password
 2. Set the project name, client name, reference, and address
 3. Create and configure your stages (names, colours, order)
 4. Share the client password with your collaborators
@@ -96,22 +97,27 @@ your-domain.com {
 
 ## How data is stored
 
-All project data lives in the browser's `localStorage`. There is no backend database. This means:
+All project data lives on the server in `server/data.json`. Clients fetch state from the API and poll every 5 seconds for updates, so multiple users working simultaneously see each other's changes within a few seconds.
 
-- Each browser/device has its own independent data
-- Clearing browser data will remove all projects
-- Use the JSON export regularly to back up your work
+- Back up `server/data.json` regularly — it's the only source of truth
+- Use the JSON export for per-drawing backups
 - Use the HTML export to create permanent, portable archives
+
+### Collaboration notes
+
+- Saves are per-drawing, so collisions only happen when two users edit the same drawing at the same moment. Last write wins.
+- While a drawing is open in the editor, remote polling pauses so your in-progress work isn't overwritten.
+- Admin settings (project name, stages, etc.) are written only when you click Save.
 
 ## New deployment per project
 
-Each client project should be a fresh deployment. Clone the repo, set passwords, build, and upload. This keeps projects isolated and passwords separate.
+Each client project should be a fresh deployment. Clone the repo, set passwords, build, and run. This keeps projects isolated, passwords separate, and each project's `data.json` independent.
 
 ## Tech
 
 - [Vite](https://vite.dev) + [React](https://react.dev) 18
+- [Express](https://expressjs.com) API, JSON-file storage
 - No CSS framework — inline styles throughout
-- No backend — static files only
 - [JSZip](https://stuk.github.io/jszip/) for stage export
 - [DM Sans](https://fonts.google.com/specimen/DM+Sans) + [DM Mono](https://fonts.google.com/specimen/DM+Mono) via Google Fonts
 
@@ -123,9 +129,13 @@ src/
   App.jsx             Index page, routing, client login
   Admin.jsx           Admin settings, stage management, import
   drawing-notes.jsx   Drawing editor, annotations, export
+  api.js              Client wrapper for the backend
+server/
+  index.js            Express API (login, state, projects, settings)
+  data.json           Created at runtime (gitignored)
 index.html            HTML shell
-vite.config.js        Vite config (port 3000)
-.env.example          Password template
+vite.config.js        Vite config + /api dev proxy
+.env.example          Config template
 ```
 
 ## Licence
