@@ -1,11 +1,10 @@
 import { useState, useEffect, useRef } from "react";
+import * as api from "./api.js";
 
 const C = {
   ink: "#1a1a1a", bg: "#f5f2ed", paper: "#ffffff",
   border: "#d4cfc7", muted: "#8a8478", red: "#c4342d",
 };
-
-const ADMIN_PW = import.meta.env.VITE_ADMIN_PASSWORD || "admin";
 
 export const DEFAULT_STAGES = [
   { id: "design", label: "Design", color: "#2563eb", bg: "#eff6ff", active: true },
@@ -26,28 +25,7 @@ export const COLOR_PRESETS = [
   { color: "#475569", bg: "#f8fafc" },
 ];
 
-function loadSettings() {
-  try { return JSON.parse(localStorage.getItem("draw-settings") || "{}"); }
-  catch { return {}; }
-}
-
-export function getSettings() {
-  return loadSettings();
-}
-
-export function getStages() {
-  return loadSettings().stages || DEFAULT_STAGES;
-}
-
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
-
-function loadProjects() {
-  try { return JSON.parse(localStorage.getItem("draw-projects") || "[]"); }
-  catch { return []; }
-}
-function saveProjectsToStorage(projects) {
-  localStorage.setItem("draw-projects", JSON.stringify(projects));
-}
 
 function stageId(label, existing) {
   let base = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -59,9 +37,10 @@ function stageId(label, existing) {
 }
 
 export default function Admin({ onBack }) {
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem("draw-admin-session") === "true");
+  const [authed, setAuthed] = useState(() => api.isAdmin());
   const [pw, setPw] = useState("");
-  const [pwError, setPwError] = useState(false);
+  const [pwError, setPwError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   const [projectName, setProjectName] = useState("");
   const [clientName, setClientName] = useState("");
@@ -74,40 +53,61 @@ export default function Admin({ onBack }) {
   const [importStage, setImportStage] = useState("");
   const [importResult, setImportResult] = useState(null);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const importRef = useRef(null);
 
   useEffect(() => {
-    if (authed) {
-      const s = loadSettings();
-      setProjectName(s.projectName || "");
-      setClientName(s.clientName || "");
-      setProjectAddress(s.projectAddress || "");
-      setProjectRef(s.projectRef || "");
-      setDescription(s.description || "");
-      setStages(s.stages || DEFAULT_STAGES);
-    }
+    if (!authed) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const state = await api.getState();
+        if (cancelled) return;
+        const s = state.settings || {};
+        setProjectName(s.projectName || "");
+        setClientName(s.clientName || "");
+        setProjectAddress(s.projectAddress || "");
+        setProjectRef(s.projectRef || "");
+        setDescription(s.description || "");
+        setStages(s.stages || DEFAULT_STAGES);
+      } catch (err) {
+        if (cancelled) return;
+        if (err.message === "unauthorized") setAuthed(false);
+        else setSaveError(err.message);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [authed]);
 
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
-    if (pw === ADMIN_PW) {
-      sessionStorage.setItem("draw-admin-session", "true");
+    setBusy(true);
+    try {
+      await api.login(pw, "admin");
       setAuthed(true);
-      setPwError(false);
-    } else {
-      setPwError(true);
+      setPwError("");
+    } catch (err) {
+      setPwError(err.message === "invalid password" ? "Incorrect password." : `Login failed: ${err.message}`);
+    } finally {
+      setBusy(false);
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const settings = { projectName, clientName, projectAddress, projectRef, description, stages };
-    localStorage.setItem("draw-settings", JSON.stringify(settings));
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setSaveError("");
+    try {
+      await api.saveSettings(settings);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      if (err.message === "unauthorized") setAuthed(false);
+      else setSaveError(err.message);
+    }
   };
 
-  const handleLogout = () => {
-    sessionStorage.removeItem("draw-admin-session");
+  const handleLogout = async () => {
+    await api.logout();
     setAuthed(false);
     setPw("");
   };
@@ -152,12 +152,12 @@ export default function Admin({ onBack }) {
     const targetStage = importStage || stages.find(s => s.active)?.id;
     if (!targetStage) { alert("No active stage to import into."); return; }
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
+      let project;
       try {
         const d = JSON.parse(ev.target.result);
-        const id = uid();
-        const project = {
-          id,
+        project = {
+          id: uid(),
           title: d.title || "Imported Drawing",
           date: d.date || new Date().toISOString(),
           phase: targetStage,
@@ -166,12 +166,15 @@ export default function Admin({ onBack }) {
           markupStrokes: d.markupStrokes || [],
           imgSize: d.imgSize || { w: 1000, h: 700 },
         };
-        const existing = loadProjects();
-        saveProjectsToStorage([...existing, project]);
+      } catch { alert("Invalid project file"); return; }
+      try {
+        await api.saveProject(project);
         const stageLabel = stages.find(s => s.id === targetStage)?.label || targetStage;
         setImportResult(`Imported "${project.title}" into ${stageLabel}`);
         setTimeout(() => setImportResult(null), 3000);
-      } catch { alert("Invalid project file"); }
+      } catch (err) {
+        alert(`Import failed: ${err.message}`);
+      }
     };
     reader.readAsText(file);
     e.target.value = "";
@@ -208,15 +211,16 @@ export default function Admin({ onBack }) {
           <form onSubmit={handleLogin}>
             <label style={{ display: "block", marginBottom: 16 }}>
               <span style={labelStyle}>Password</span>
-              <input type="password" value={pw} onChange={e => { setPw(e.target.value); setPwError(false); }}
+              <input type="password" value={pw} onChange={e => { setPw(e.target.value); setPwError(""); }}
                 autoFocus style={inputStyle} />
             </label>
-            {pwError && <p style={{ fontSize: 13, color: C.red, margin: "0 0 12px" }}>Incorrect password.</p>}
+            {pwError && <p style={{ fontSize: 13, color: C.red, margin: "0 0 12px" }}>{pwError}</p>}
             <div style={{ display: "flex", gap: 10 }}>
-              <button type="submit" style={{
+              <button type="submit" disabled={busy} style={{
                 flex: 1, background: C.ink, color: "#fff", border: "none", padding: "12px 20px",
-                fontSize: 13, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: "pointer",
-              }}>Sign In</button>
+                fontSize: 13, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: busy ? "default" : "pointer",
+                opacity: busy ? 0.6 : 1,
+              }}>{busy ? "Signing in…" : "Sign In"}</button>
               <button type="button" onClick={onBack} style={{
                 background: "transparent", color: C.ink, border: `1px solid ${C.border}`, padding: "12px 20px",
                 fontSize: 13, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: "pointer",
@@ -402,6 +406,11 @@ export default function Admin({ onBack }) {
             )}
           </div>
 
+          {saveError && (
+            <p style={{ fontSize: 12, color: C.red, margin: "0 0 10px", fontFamily: "'DM Mono',monospace" }}>
+              {saveError}
+            </p>
+          )}
           <button onClick={handleSave} style={{
             width: "100%", background: C.ink, color: "#fff", border: "none", padding: "12px 20px",
             fontSize: 13, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: "pointer",
@@ -411,7 +420,7 @@ export default function Admin({ onBack }) {
         <p style={{ fontSize: 11, color: C.muted, marginTop: 20, lineHeight: 1.6, fontFamily: "'DM Mono',monospace", textAlign: "center" }}>
           These details appear on the client-facing index page.
           <br />
-          Passwords are configured in the .env file before deployment.
+          Passwords are configured in the server .env file.
         </p>
       </div>
     </div>

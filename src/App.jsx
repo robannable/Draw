@@ -1,22 +1,13 @@
 import { useState, useEffect } from "react";
 import DrawingNotes, { NOTE_TYPES, NOTE_TYPE_KEYS, buildOfflineHTML } from "./drawing-notes.jsx";
 import JSZip from "jszip";
-import Admin, { getSettings, DEFAULT_STAGES } from "./Admin.jsx";
+import Admin, { DEFAULT_STAGES } from "./Admin.jsx";
+import * as api from "./api.js";
 
 const C = {
   ink: "#1a1a1a", bg: "#f5f2ed", paper: "#ffffff",
   border: "#d4cfc7", muted: "#8a8478", red: "#c4342d",
 };
-
-const CLIENT_PW = import.meta.env.VITE_CLIENT_PASSWORD || "client";
-
-function loadProjects() {
-  try { return JSON.parse(localStorage.getItem("draw-projects") || "[]"); }
-  catch { return []; }
-}
-function saveProjects(projects) {
-  localStorage.setItem("draw-projects", JSON.stringify(projects));
-}
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 function fmtDate(d) {
@@ -58,16 +49,20 @@ function Thumbnail({ drawingImage, imgSize, annotations, markupStrokes }) {
 // ---- Client login ----
 function ClientLogin({ onLogin, settings }) {
   const [pw, setPw] = useState("");
-  const [error, setError] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   const name = settings.projectName || "Drawing Notes";
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (pw === CLIENT_PW) {
-      sessionStorage.setItem("draw-client-session", "true");
+    setBusy(true);
+    try {
+      await api.login(pw, "client");
       onLogin();
-    } else {
-      setError(true);
+    } catch (err) {
+      setError(err.message === "invalid password" ? "Incorrect password." : `Login failed: ${err.message}`);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -91,14 +86,15 @@ function ClientLogin({ onLogin, settings }) {
         <form onSubmit={handleSubmit}>
           <label style={{ display: "block", marginBottom: 16 }}>
             <span style={{ fontSize: 12, fontFamily: "'DM Mono',monospace", color: C.muted, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>Password</span>
-            <input type="password" value={pw} onChange={e => { setPw(e.target.value); setError(false); }}
+            <input type="password" value={pw} onChange={e => { setPw(e.target.value); setError(""); }}
               autoFocus style={inputStyle} />
           </label>
-          {error && <p style={{ fontSize: 13, color: C.red, margin: "0 0 12px" }}>Incorrect password.</p>}
-          <button type="submit" style={{
+          {error && <p style={{ fontSize: 13, color: C.red, margin: "0 0 12px" }}>{error}</p>}
+          <button type="submit" disabled={busy} style={{
             width: "100%", background: C.ink, color: "#fff", border: "none", padding: "12px 20px",
-            fontSize: 13, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: "pointer",
-          }}>Sign In</button>
+            fontSize: 13, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: busy ? "default" : "pointer",
+            opacity: busy ? 0.6 : 1,
+          }}>{busy ? "Signing in…" : "Sign In"}</button>
         </form>
       </div>
     </div>
@@ -107,12 +103,13 @@ function ClientLogin({ onLogin, settings }) {
 
 // ---- Main app ----
 export default function App() {
-  const [projects, setProjects] = useState(loadProjects);
+  const [projects, setProjects] = useState([]);
   const [editing, setEditing] = useState(null);
-  const [settings, setSettings] = useState(getSettings);
-  const [clientAuthed, setClientAuthed] = useState(() => sessionStorage.getItem("draw-client-session") === "true");
+  const [settings, setSettings] = useState({});
+  const [clientAuthed, setClientAuthed] = useState(() => api.isAuthed());
   const [route, setRoute] = useState(() => window.location.hash);
   const [movePopup, setMovePopup] = useState(null); // project id with open move popup
+  const [syncError, setSyncError] = useState("");
 
   // Hash routing
   useEffect(() => {
@@ -121,10 +118,27 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  // Refresh settings when coming back from admin
-  useEffect(() => { setSettings(getSettings()); }, [route]);
-
-  useEffect(() => { saveProjects(projects); }, [projects]);
+  // Fetch state + poll. Skip while editing a drawing so local edits aren't clobbered.
+  useEffect(() => {
+    if (!clientAuthed || route === "#admin" || editing) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const state = await api.getState();
+        if (cancelled) return;
+        setProjects(state.projects || []);
+        setSettings(state.settings || {});
+        setSyncError("");
+      } catch (err) {
+        if (cancelled) return;
+        if (err.message === "unauthorized") { setClientAuthed(false); return; }
+        setSyncError(err.message);
+      }
+    };
+    refresh();
+    const interval = setInterval(refresh, 5000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [clientAuthed, route, editing]);
 
   // Derive stages from settings
   const stages = settings.stages || DEFAULT_STAGES;
@@ -145,29 +159,49 @@ export default function App() {
 
   const openProject = (id) => setEditing(id);
 
-  const startNew = (phase) => {
+  const reportError = (err) => {
+    if (err?.message === "unauthorized") { setClientAuthed(false); return; }
+    setSyncError(err?.message || "Save failed");
+  };
+
+  const startNew = async (phase) => {
     const id = uid();
     const project = { id, title: "Untitled Drawing", date: new Date().toISOString(), phase, drawingImage: null, annotations: [], markupStrokes: [], imgSize: { w: 1000, h: 700 } };
     setProjects(prev => [...prev, project]);
     setEditing(id);
+    try { await api.saveProject(project); } catch (err) { reportError(err); }
   };
 
-  const handleSave = (id) => (data) => {
-    setProjects(prev => prev.map(p => p.id === id ? { ...p, ...data } : p));
+  const handleSave = (id) => async (data) => {
+    let updated = null;
+    setProjects(prev => prev.map(p => {
+      if (p.id !== id) return p;
+      updated = { ...p, ...data };
+      return updated;
+    }));
+    if (!updated) return;
+    try { await api.saveProject(updated); } catch (err) { reportError(err); }
   };
 
   const handleBack = () => setEditing(null);
 
-  const deleteProject = (id, e) => {
+  const deleteProject = async (id, e) => {
     e.stopPropagation();
-    if (confirm("Delete this drawing?")) {
-      setProjects(prev => prev.filter(p => p.id !== id));
-    }
+    if (!confirm("Delete this drawing?")) return;
+    setProjects(prev => prev.filter(p => p.id !== id));
+    try { await api.deleteProject(id); } catch (err) { reportError(err); }
   };
 
-  const moveProject = (id, newStageId, e) => {
+  const moveProject = async (id, newStageId, e) => {
     e.stopPropagation();
-    setProjects(prev => prev.map(p => p.id === id ? { ...p, phase: newStageId } : p));
+    let updated = null;
+    setProjects(prev => prev.map(p => {
+      if (p.id !== id) return p;
+      updated = { ...p, phase: newStageId };
+      return updated;
+    }));
+    if (!updated) return;
+    try { await api.saveProject(updated); } catch (err) { reportError(err); }
   };
 
   const exportStage = async (stage) => {
@@ -200,9 +234,10 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const handleLogout = () => {
-    sessionStorage.removeItem("draw-client-session");
+  const handleLogout = async () => {
+    await api.logout();
     setClientAuthed(false);
+    setProjects([]);
   };
 
   // Editor view
@@ -223,6 +258,12 @@ export default function App() {
   return (
     <div style={{ minHeight: "100vh", background: C.bg, fontFamily: "'DM Sans',sans-serif" }} onClick={() => movePopup && setMovePopup(null)}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet" />
+
+      {syncError && (
+        <div style={{ background: "#fef2f2", borderBottom: `1px solid ${C.red}30`, padding: "8px 28px", fontSize: 12, color: C.red, fontFamily: "'DM Mono',monospace" }}>
+          Sync error: {syncError}
+        </div>
+      )}
 
       {/* Header */}
       <div style={{ borderBottom: `1px solid ${C.border}`, background: C.paper, padding: "20px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
