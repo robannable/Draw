@@ -64,6 +64,9 @@ The API listens on `PORT` (default 3001) and reads/writes `server/data.json`.
 ### Fronting with nginx (recommended)
 
 ```nginx
+# http context (e.g. /etc/nginx/conf.d/draw.conf or inside http { } in nginx.conf)
+limit_req_zone $binary_remote_addr zone=draw_api:10m rate=600r/m;
+
 server {
     listen 80;
     server_name your-domain.com;
@@ -76,6 +79,11 @@ server {
     }
 
     location /api/ {
+        # Active editing autosaves at 2–3 PUT/sec; generic "general" zones with
+        # low burst (e.g. 30 r/m burst=20) will 503 the client and, with
+        # fail2ban nginx-limit-req in play, earn an hour-long ban.
+        limit_req zone=draw_api burst=200 nodelay;
+
         proxy_pass http://127.0.0.1:3001;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -83,6 +91,8 @@ server {
     }
 }
 ```
+
+> **fail2ban note:** if you run the `nginx-limit-req` jail, default `maxretry=5 / findtime=600 / bantime=3600` is too aggressive for this app's save cadence. Values around `maxretry=20 / findtime=60 / bantime=600` catch real scrapers without banning editors on a momentary burst.
 
 > **Note:** Ensure your nginx `mime.types` file maps `.mjs` to `application/javascript`. The PDF worker is an ES module (`.mjs`) and browsers will reject it if served with the wrong MIME type. Check for this line:
 > ```

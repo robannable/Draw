@@ -54,9 +54,12 @@ Typical VPS layout: nginx serves the built `dist/` directory and reverse-proxies
 
 ```nginx
 location /api/ {
+    limit_req zone=draw_api burst=200 nodelay;  # paired with a 600 r/m zone at http level
     proxy_pass http://127.0.0.1:3001;
 }
 ```
+
+Active editing autosaves at 2–3 PUT/sec, so any rate-limit zone applied to `/api/` needs a generous burst — see the README for the full `limit_req_zone` declaration and a fail2ban sizing note.
 
 If you don't have a fronting web server, run Node with `SERVE_STATIC=true` and it will serve `dist/` itself.
 
