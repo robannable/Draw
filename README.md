@@ -6,7 +6,8 @@ Built for architects, designers, and project managers who need a simple, self-ho
 
 ## Features
 
-- **Drawing annotation** — upload images, place numbered pins, add text notes categorised as Questions or Descriptions
+- **Drawing annotation** — upload images (PNG, JPG), SVGs, or PDFs, place numbered pins, add text notes categorised as Questions or Descriptions
+- **PDF support** — client-side PDF rendering with page selection for multi-page documents and a progress bar during processing
 - **Comments and attribution** — named comments on any annotation, with full edit history
 - **Markup drawing** — freehand markup directly on plans
 - **Project stages** — organise drawings into custom stages (e.g. Design, Construction, Handover) with drag-and-drop movement between them
@@ -21,7 +22,7 @@ Built for architects, designers, and project managers who need a simple, self-ho
 ## Quick start
 
 ```sh
-git clone <your-repo-url> my-project
+git clone https://github.com/robannable/Draw.git my-project
 cd my-project
 npm install
 cp .env.example .env
@@ -83,6 +84,11 @@ server {
 }
 ```
 
+> **Note:** Ensure your nginx `mime.types` file maps `.mjs` to `application/javascript`. The PDF worker is an ES module (`.mjs`) and browsers will reject it if served with the wrong MIME type. Check for this line:
+> ```
+> application/javascript    js mjs;
+> ```
+
 ### Without a fronting web server
 
 Set `SERVE_STATIC=true` in `.env` and Node will serve the built `dist/` directly. Not recommended for production but handy for quick trials.
@@ -118,6 +124,7 @@ Each client project should be a fresh deployment. Clone the repo, set passwords,
 - [Vite](https://vite.dev) + [React](https://react.dev) 18
 - [Express](https://expressjs.com) API, JSON-file storage
 - No CSS framework — inline styles throughout
+- [pdfjs-dist](https://mozilla.github.io/pdf.js/) for client-side PDF rendering
 - [JSZip](https://stuk.github.io/jszip/) for stage export
 - [DM Sans](https://fonts.google.com/specimen/DM+Sans) + [DM Mono](https://fonts.google.com/specimen/DM+Mono) via Google Fonts
 
