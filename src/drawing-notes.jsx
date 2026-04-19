@@ -416,6 +416,7 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
   const [markupThickness, setMarkupThickness] = useState(3);
   const [svgContent, setSvgContent] = useState(init.svgContent || null);
   const [pdfPages, setPdfPages] = useState(null);
+  const [pdfProgress, setPdfProgress] = useState(null);
 
   const [viewBox, setViewBox] = useState({ x: 0, y: 0, w: init.imgSize?.w || 1000, h: init.imgSize?.h || 700 });
   const [isPanning, setIsPanning] = useState(false);
@@ -460,23 +461,35 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
 
     // PDF
     if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-      file.arrayBuffer().then(async (buf) => {
-        const pdfjsLib = await import('pdfjs-dist');
-        pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
-        const doc = await pdfjsLib.getDocument({ data: buf }).promise;
-        if (doc.numPages === 1) {
-          const { dataUrl, w, h } = await renderPDFPage(doc, 1, 4000);
-          setImgSize({ w, h }); setViewBox({ x: 0, y: 0, w, h });
-          setDrawingImage(dataUrl); setSvgContent(null); setShowSetup(false);
-        } else {
-          pdfDocRef.current = doc;
-          const previews = [];
-          for (let i = 1; i <= doc.numPages; i++) {
-            previews.push(await renderPDFPage(doc, i, 300));
+      (async () => {
+        try {
+          setPdfProgress({ pct: 5, msg: "Reading file\u2026" });
+          const buf = await file.arrayBuffer();
+          setPdfProgress({ pct: 15, msg: "Loading PDF engine\u2026" });
+          const pdfjsLib = await import('pdfjs-dist');
+          pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
+          setPdfProgress({ pct: 30, msg: "Parsing document\u2026" });
+          const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+          if (doc.numPages === 1) {
+            setPdfProgress({ pct: 50, msg: "Rendering page\u2026" });
+            const { dataUrl, w, h } = await renderPDFPage(doc, 1, 4000);
+            setImgSize({ w, h }); setViewBox({ x: 0, y: 0, w, h });
+            setDrawingImage(dataUrl); setSvgContent(null); setPdfProgress(null); setShowSetup(false);
+          } else {
+            pdfDocRef.current = doc;
+            const previews = [];
+            for (let i = 1; i <= doc.numPages; i++) {
+              setPdfProgress({ pct: 30 + Math.round(65 * i / doc.numPages), msg: `Rendering page ${i} of ${doc.numPages}\u2026` });
+              previews.push(await renderPDFPage(doc, i, 300));
+            }
+            setPdfProgress(null);
+            setPdfPages(previews);
           }
-          setPdfPages(previews);
+        } catch (err) {
+          setPdfProgress(null);
+          alert("PDF processing failed: " + err.message);
         }
-      });
+      })();
       return;
     }
 
@@ -649,6 +662,27 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
   };
 
   const sw = (thickness) => Math.max(1, (thickness || 3) / scale);
+
+  // --- PDF progress screen ---
+  if (pdfProgress) {
+    return (
+      <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans',sans-serif", padding: 20 }}>
+        <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet" />
+        <div style={{ background: C.paper, border: `1px solid ${C.border}`, maxWidth: 480, width: "100%", padding: "40px 36px" }}>
+          <h1 style={{ fontFamily: "'DM Mono',monospace", fontSize: 18, fontWeight: 500, marginBottom: 6, color: C.ink }}>Processing PDF</h1>
+          <p style={{ fontSize: 14, color: C.muted, margin: "0 0 20px", lineHeight: 1.5, fontFamily: "'DM Mono',monospace" }}>
+            {pdfProgress.msg}
+          </p>
+          <div style={{ width: "100%", height: 6, background: C.border, borderRadius: 3, overflow: "hidden" }}>
+            <div style={{ width: `${pdfProgress.pct}%`, height: "100%", background: C.ink, borderRadius: 3, transition: "width 0.3s ease" }} />
+          </div>
+          <p style={{ fontSize: 11, color: C.muted, marginTop: 12, fontFamily: "'DM Mono',monospace" }}>
+            {pdfProgress.pct}%
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   // --- PDF page picker ---
   if (pdfPages) {
