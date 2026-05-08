@@ -101,8 +101,34 @@ app.post("/api/logout", (req, res) => {
 });
 
 // Settings (admin-only writes, any auth reads)
+// /api/state returns the full payload (heavy — kept for backwards compat).
 app.get("/api/state", requireAuth(["client", "admin"]), (_req, res) => {
   res.json(readData());
+});
+
+// Lite variant: strips per-drawing image bytes so the index loads fast.
+// Each project gets hasImage/hasSvg flags and an updatedAt stamp; the client
+// lazy-loads the full bytes via /api/projects/:id when it needs them.
+app.get("/api/state/lite", requireAuth(["client", "admin"]), (_req, res) => {
+  const data = readData();
+  const projects = data.projects.map(p => {
+    const { drawingImage, svgContent, ...rest } = p;
+    return {
+      ...rest,
+      hasImage: !!drawingImage,
+      hasSvg: !!svgContent,
+      updatedAt: p.updatedAt || null,
+    };
+  });
+  res.json({ settings: data.settings, projects });
+});
+
+app.get("/api/projects/:id", requireAuth(["client", "admin"]), (req, res) => {
+  const { id } = req.params;
+  const data = readData();
+  const project = data.projects.find(p => p.id === id);
+  if (!project) return res.status(404).json({ error: "not found" });
+  res.json({ project });
 });
 
 app.put("/api/settings", requireAuth(["admin"]), async (req, res) => {
@@ -115,7 +141,7 @@ app.put("/api/settings", requireAuth(["admin"]), async (req, res) => {
 // Projects (any auth)
 app.put("/api/projects/:id", requireAuth(["client", "admin"]), async (req, res) => {
   const { id } = req.params;
-  const project = { ...(req.body || {}), id };
+  const project = { ...(req.body || {}), id, updatedAt: new Date().toISOString() };
   const data = readData();
   const idx = data.projects.findIndex(p => p.id === id);
   if (idx === -1) data.projects.push(project);
