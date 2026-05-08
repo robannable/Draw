@@ -212,7 +212,7 @@ export default function Admin({ onBack }) {
             <label style={{ display: "block", marginBottom: 16 }}>
               <span style={labelStyle}>Password</span>
               <input type="password" value={pw} onChange={e => { setPw(e.target.value); setPwError(""); }}
-                autoFocus style={inputStyle} />
+                autoComplete="current-password" autoFocus style={inputStyle} />
             </label>
             {pwError && <p style={{ fontSize: 13, color: C.red, margin: "0 0 12px" }}>{pwError}</p>}
             <div style={{ display: "flex", gap: 10 }}>

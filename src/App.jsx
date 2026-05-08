@@ -136,7 +136,7 @@ function ClientLogin({ onLogin, settings }) {
           <label style={{ display: "block", marginBottom: 16 }}>
             <span style={{ fontSize: 12, fontFamily: "'DM Mono',monospace", color: C.muted, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>Password</span>
             <input type="password" value={pw} onChange={e => { setPw(e.target.value); setError(""); }}
-              autoFocus style={inputStyle} />
+              autoComplete="current-password" autoFocus style={inputStyle} />
           </label>
           {error && <p style={{ fontSize: 13, color: C.red, margin: "0 0 12px" }}>{error}</p>}
           <button type="submit" disabled={busy} style={{
