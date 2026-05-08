@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import DrawingNotes, { NOTE_TYPES, NOTE_TYPE_KEYS, buildOfflineHTML } from "./drawing-notes.jsx";
 import JSZip from "jszip";
 import Admin, { DEFAULT_STAGES } from "./Admin.jsx";
@@ -43,6 +43,55 @@ function Thumbnail({ drawingImage, imgSize, annotations, markupStrokes }) {
         );
       })}
     </svg>
+  );
+}
+
+// LazyThumbnail: when scrolled near the viewport, asks the parent to load
+// the full image bytes for this project. Until loaded, shows a skeleton.
+function LazyThumbnail({ project, image, onNeedImage }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!project.hasImage && !project.hasSvg) return;
+    if (image) return;
+    const el = ref.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === "undefined") {
+      onNeedImage(project.id);
+      return;
+    }
+    const obs = new IntersectionObserver((entries) => {
+      if (entries.some(e => e.isIntersecting)) {
+        onNeedImage(project.id);
+        obs.disconnect();
+      }
+    }, { rootMargin: "200px" });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [project.id, project.hasImage, project.hasSvg, !!image]);
+
+  const hasAnyImage = project.hasImage || project.hasSvg;
+  if (!hasAnyImage) {
+    return <span style={{ fontSize: 11, fontFamily: "'DM Mono',monospace", color: C.muted }}>No image</span>;
+  }
+  if (image && image.drawingImage) {
+    return (
+      <Thumbnail
+        drawingImage={image.drawingImage}
+        imgSize={project.imgSize}
+        annotations={project.annotations}
+        markupStrokes={project.markupStrokes}
+      />
+    );
+  }
+  return (
+    <div ref={ref} style={{
+      width: "100%", height: "100%", minHeight: 80,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      background: "linear-gradient(90deg, #e8e4de 0%, #f0ece6 50%, #e8e4de 100%)",
+      backgroundSize: "200% 100%", animation: "thumb-shimmer 1.4s ease-in-out infinite",
+    }}>
+      <span style={{ fontSize: 10, fontFamily: "'DM Mono',monospace", color: C.muted, opacity: 0.7 }}>Loading…</span>
+    </div>
   );
 }
 
@@ -103,13 +152,19 @@ function ClientLogin({ onLogin, settings }) {
 
 // ---- Main app ----
 export default function App() {
+  // `projects` is the lite list (no image bytes). Image bytes live in
+  // `imageCache` and are fetched per-project via lazy load on demand.
   const [projects, setProjects] = useState([]);
+  const [imageCache, setImageCache] = useState({}); // id -> { drawingImage, svgContent, updatedAt }
   const [editing, setEditing] = useState(null);
+  const [openingId, setOpeningId] = useState(null); // a project we're fetching to open
   const [settings, setSettings] = useState({});
   const [clientAuthed, setClientAuthed] = useState(() => api.isAuthed());
   const [route, setRoute] = useState(() => window.location.hash);
   const [movePopup, setMovePopup] = useState(null); // project id with open move popup
   const [syncError, setSyncError] = useState("");
+  const [initialLoading, setInitialLoading] = useState(true);
+  const inFlightImages = useRef(new Set());
 
   // Hash routing
   useEffect(() => {
@@ -118,27 +173,73 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  // Fetch state + poll. Skip while editing a drawing so local edits aren't clobbered.
+  // Fetch state + poll. Uses the lite endpoint so the index lands fast.
+  // Skip while editing a drawing so local edits aren't clobbered.
   useEffect(() => {
     if (!clientAuthed || route === "#admin" || editing) return;
     let cancelled = false;
     const refresh = async () => {
       try {
-        const state = await api.getState();
+        const state = await api.getStateLite();
         if (cancelled) return;
-        setProjects(state.projects || []);
+        const next = state.projects || [];
+        setProjects(next);
         setSettings(state.settings || {});
         setSyncError("");
+        setInitialLoading(false);
+        // Drop cached image bytes for projects whose updatedAt has changed
+        // (or that no longer exist), so the next viewport hit re-fetches.
+        setImageCache(prev => {
+          const out = { ...prev };
+          let changed = false;
+          for (const id of Object.keys(out)) {
+            const p = next.find(x => x.id === id);
+            if (!p) { delete out[id]; changed = true; continue; }
+            if (p.updatedAt && out[id].updatedAt && p.updatedAt !== out[id].updatedAt) {
+              delete out[id];
+              changed = true;
+            }
+          }
+          return changed ? out : prev;
+        });
       } catch (err) {
         if (cancelled) return;
         if (err.message === "unauthorized") { setClientAuthed(false); return; }
         setSyncError(err.message);
+        setInitialLoading(false);
       }
     };
     refresh();
     const interval = setInterval(refresh, 5000);
     return () => { cancelled = true; clearInterval(interval); };
   }, [clientAuthed, route, editing]);
+
+  // Lazy-fetch the full image bytes for a single project. Cards call this
+  // via IntersectionObserver; openProject also awaits it before entering
+  // the editor so the user always sees the real drawing immediately.
+  const loadImage = async (id) => {
+    if (inFlightImages.current.has(id)) return;
+    const lite = projects.find(p => p.id === id);
+    const cached = imageCache[id];
+    if (cached && lite && cached.updatedAt === lite.updatedAt) return;
+    inFlightImages.current.add(id);
+    try {
+      const { project } = await api.getProject(id);
+      setImageCache(prev => ({
+        ...prev,
+        [id]: {
+          drawingImage: project.drawingImage || null,
+          svgContent: project.svgContent || null,
+          updatedAt: project.updatedAt || null,
+        },
+      }));
+    } catch (err) {
+      if (err.message === "unauthorized") setClientAuthed(false);
+      else setSyncError(err.message);
+    } finally {
+      inFlightImages.current.delete(id);
+    }
+  };
 
   // Derive stages from settings
   const stages = settings.stages || DEFAULT_STAGES;
@@ -157,30 +258,69 @@ export default function App() {
     return <ClientLogin settings={settings} onLogin={() => setClientAuthed(true)} />;
   }
 
-  const openProject = (id) => setEditing(id);
-
   const reportError = (err) => {
     if (err?.message === "unauthorized") { setClientAuthed(false); return; }
     setSyncError(err?.message || "Save failed");
   };
 
+  const openProject = async (id) => {
+    const lite = projects.find(p => p.id === id);
+    if (!lite) return;
+    // Empty drawings (no image yet) skip the round-trip.
+    if (!lite.hasImage && !lite.hasSvg) {
+      setEditing(id);
+      return;
+    }
+    setOpeningId(id);
+    try {
+      await loadImage(id);
+    } finally {
+      setOpeningId(null);
+    }
+    setEditing(id);
+  };
+
   const startNew = async (phase) => {
     const id = uid();
     const project = { id, title: "Untitled Drawing", date: new Date().toISOString(), phase, drawingImage: null, annotations: [], markupStrokes: [], imgSize: { w: 1000, h: 700 } };
-    setProjects(prev => [...prev, project]);
+    // Lite list mirrors what the server returns from /api/state/lite.
+    const lite = { id, title: project.title, date: project.date, phase, annotations: [], markupStrokes: [], imgSize: project.imgSize, hasImage: false, hasSvg: false, updatedAt: null };
+    setProjects(prev => [...prev, lite]);
     setEditing(id);
-    try { await api.saveProject(project); } catch (err) { reportError(err); }
+    try {
+      const res = await api.saveProject(project);
+      const stamp = res?.project?.updatedAt || null;
+      setProjects(prev => prev.map(p => p.id === id ? { ...p, updatedAt: stamp } : p));
+      setImageCache(prev => ({ ...prev, [id]: { drawingImage: null, svgContent: null, updatedAt: stamp } }));
+    } catch (err) { reportError(err); }
   };
 
   const handleSave = (id) => async (data) => {
-    let updated = null;
-    setProjects(prev => prev.map(p => {
-      if (p.id !== id) return p;
-      updated = { ...p, ...data };
-      return updated;
+    // Build the full project (with image bytes) for the server.
+    const existing = projects.find(p => p.id === id) || {};
+    const full = { ...existing, ...data, id };
+    // Optimistically update lite list (strip image bytes), and stage image cache.
+    const liteUpdate = { ...full };
+    delete liteUpdate.drawingImage;
+    delete liteUpdate.svgContent;
+    liteUpdate.hasImage = !!full.drawingImage;
+    liteUpdate.hasSvg = !!full.svgContent;
+    setProjects(prev => prev.map(p => p.id === id ? { ...p, ...liteUpdate } : p));
+    setImageCache(prev => ({
+      ...prev,
+      [id]: {
+        drawingImage: full.drawingImage || null,
+        svgContent: full.svgContent || null,
+        updatedAt: prev[id]?.updatedAt || null,
+      },
     }));
-    if (!updated) return;
-    try { await api.saveProject(updated); } catch (err) { reportError(err); }
+    try {
+      const res = await api.saveProject(full);
+      const stamp = res?.project?.updatedAt || null;
+      // Sync updatedAt so polling doesn't drop the cache we just primed.
+      setProjects(prev => prev.map(p => p.id === id ? { ...p, updatedAt: stamp } : p));
+      setImageCache(prev => prev[id] ? ({ ...prev, [id]: { ...prev[id], updatedAt: stamp } }) : prev);
+    } catch (err) { reportError(err); }
   };
 
   const handleBack = () => setEditing(null);
@@ -207,9 +347,18 @@ export default function App() {
   const exportStage = async (stage) => {
     const drawings = byPhase[stage.id] || [];
     if (drawings.length === 0) return;
+    // Lite list lacks image bytes — fetch each project's full payload first.
+    const fulls = await Promise.all(drawings.map(async p => {
+      try {
+        const { project } = await api.getProject(p.id);
+        return project;
+      } catch {
+        return p;
+      }
+    }));
     const zip = new JSZip();
     const imgFolder = zip.folder("originals");
-    drawings.forEach(p => {
+    fulls.forEach(p => {
       const html = buildOfflineHTML(p.title, p.date, p.annotations || [], p.markupStrokes || [], p.drawingImage, p.svgContent || null, p.imgSize || { w: 1000, h: 700 }, NOTE_TYPES, NOTE_TYPE_KEYS);
       const baseName = p.title.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9-_]/g, "").toLowerCase();
       zip.file(`${baseName}-archive.html`, html);
@@ -238,12 +387,21 @@ export default function App() {
     await api.logout();
     setClientAuthed(false);
     setProjects([]);
+    setImageCache({});
+    setInitialLoading(true);
   };
 
-  // Editor view
+  // Editor view: combine the lite project record with the lazily-fetched
+  // image bytes from the cache.
   if (editing) {
-    const project = projects.find(p => p.id === editing);
-    if (!project) { setEditing(null); return null; }
+    const lite = projects.find(p => p.id === editing);
+    if (!lite) { setEditing(null); return null; }
+    const cached = imageCache[editing] || {};
+    const project = {
+      ...lite,
+      drawingImage: cached.drawingImage || null,
+      svgContent: cached.svgContent || null,
+    };
     return <DrawingNotes key={editing} initialData={project} onBack={handleBack} onSave={handleSave(editing)} />;
   }
 
@@ -262,6 +420,22 @@ export default function App() {
       {syncError && (
         <div style={{ background: "#fef2f2", borderBottom: `1px solid ${C.red}30`, padding: "8px 28px", fontSize: 12, color: C.red, fontFamily: "'DM Mono',monospace" }}>
           Sync error: {syncError}
+        </div>
+      )}
+
+      {initialLoading && (
+        <div style={{ background: "#fafaf7", borderBottom: `1px solid ${C.border}`, padding: "8px 28px", fontSize: 12, color: C.muted, fontFamily: "'DM Mono',monospace", display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ display: "inline-block", width: 10, height: 10, border: `2px solid ${C.border}`, borderTopColor: C.ink, borderRadius: "50%", animation: "draw-spin 0.8s linear infinite" }} />
+          Loading drawings…
+        </div>
+      )}
+
+      {openingId && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(245,242,237,0.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, fontFamily: "'DM Mono',monospace", color: C.ink, fontSize: 13 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, background: C.paper, border: `1px solid ${C.border}`, padding: "14px 22px" }}>
+            <span style={{ display: "inline-block", width: 14, height: 14, border: `2px solid ${C.border}`, borderTopColor: C.ink, borderRadius: "50%", animation: "draw-spin 0.8s linear infinite" }} />
+            Opening drawing…
+          </div>
         </div>
       )}
 
@@ -356,11 +530,11 @@ export default function App() {
                       width: 120, minHeight: 80, flexShrink: 0, background: "#e8e4de", overflow: "hidden",
                       display: "flex", alignItems: "center", justifyContent: "center",
                     }}>
-                      {p.drawingImage ? (
-                        <Thumbnail drawingImage={p.drawingImage} imgSize={p.imgSize} annotations={p.annotations} markupStrokes={p.markupStrokes} />
-                      ) : (
-                        <span style={{ fontSize: 11, fontFamily: "'DM Mono',monospace", color: C.muted }}>No image</span>
-                      )}
+                      <LazyThumbnail
+                        project={p}
+                        image={imageCache[p.id]}
+                        onNeedImage={loadImage}
+                      />
                     </div>
                     {/* Info */}
                     <div style={{ padding: "10px 12px", flex: 1, minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "flex-start", borderLeft: `1px solid ${C.border}` }}>
@@ -420,6 +594,8 @@ export default function App() {
       </div>
 
       <style>{`
+        @keyframes draw-spin { to { transform: rotate(360deg); } }
+        @keyframes thumb-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
         @media (max-width: 768px) {
           .stage-columns {
             flex-direction: column !important;

@@ -90,13 +90,15 @@ function HistoryTimeline({ history }) {
   );
 }
 
-function FootnoteCard({ annotation, active, onActivate, onUpdate, onDelete, onAddComment, onTypeChange }) {
+function FootnoteCard({ annotation, active, onActivate, onUpdate, onDelete, onAddComment, onUpdateComment, onDeleteComment, onTypeChange }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(annotation.text);
   const [commentText, setCommentText] = useState("");
   const [commentName, setCommentName] = useState("");
   const [showComments, setShowComments] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [editingCommentIdx, setEditingCommentIdx] = useState(null);
+  const [editingCommentText, setEditingCommentText] = useState("");
   const ref = useRef(null);
 
   useEffect(() => { if (active && ref.current) ref.current.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [active]);
@@ -170,15 +172,50 @@ function FootnoteCard({ annotation, active, onActivate, onUpdate, onDelete, onAd
 
           {showComments && (
             <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px dashed ${C.border}` }}>
-              {comments.map((c, i) => (
-                <div key={i} style={{ background: "#f0edea", borderRadius: 6, padding: "8px 10px", marginBottom: 6, fontSize: 13, lineHeight: 1.45, fontFamily: "'DM Sans',sans-serif" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-                    <strong style={{ fontSize: 11, color: C.red, textTransform: "uppercase", letterSpacing: "0.04em" }}>{c.author}</strong>
-                    <span style={{ fontSize: 11, color: C.muted }}>{fmtDate(c.date)} {fmtTime(c.date)}</span>
+              {comments.map((c, i) => {
+                const isEditingThis = editingCommentIdx === i;
+                return (
+                  <div key={i} style={{ background: "#f0edea", borderRadius: 6, padding: "8px 10px", marginBottom: 6, fontSize: 13, lineHeight: 1.45, fontFamily: "'DM Sans',sans-serif" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                      <strong style={{ fontSize: 11, color: C.red, textTransform: "uppercase", letterSpacing: "0.04em" }}>{c.author}</strong>
+                      <span style={{ fontSize: 11, color: C.muted }}>
+                        {fmtDate(c.date)} {fmtTime(c.date)}{c.editedAt ? " · edited" : ""}
+                      </span>
+                    </div>
+                    {isEditingThis ? (
+                      <div onClick={e => e.stopPropagation()}>
+                        <textarea value={editingCommentText} onChange={e => setEditingCommentText(e.target.value)}
+                          rows={2}
+                          style={{ width: "100%", fontFamily: "'DM Sans',sans-serif", fontSize: 13, border: `1px solid ${C.border}`, borderRadius: 4, padding: "6px 8px", resize: "vertical", outline: "none", lineHeight: 1.45, boxSizing: "border-box" }} />
+                        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                          <button onClick={() => {
+                            const t = editingCommentText.trim();
+                            if (!t) return;
+                            onUpdateComment(annotation.id, i, t);
+                            setEditingCommentIdx(null);
+                          }} style={btnS(C.ink, "#fff")}>Save</button>
+                          <button onClick={() => setEditingCommentIdx(null)} style={btnS("transparent", "#666", true)}>Cancel</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div>{c.text}</div>
+                        <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+                          <button onClick={e => {
+                            e.stopPropagation();
+                            setEditingCommentIdx(i);
+                            setEditingCommentText(c.text);
+                          }} style={linkBtn}>Edit</button>
+                          <button onClick={e => {
+                            e.stopPropagation();
+                            if (confirm("Delete this comment?")) onDeleteComment(annotation.id, i);
+                          }} style={{ ...linkBtn, color: C.red }}>Delete</button>
+                        </div>
+                      </>
+                    )}
                   </div>
-                  {c.text}
-                </div>
-              ))}
+                );
+              })}
               <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
                 <input value={commentName} onChange={e => setCommentName(e.target.value)}
                   onClick={e => e.stopPropagation()} placeholder="Your name"
@@ -617,6 +654,22 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
       history: [...(a.history || []), hEntry(`Comment by ${author}`, text.slice(0, 60))]
     } : a));
   };
+  const updateComment = (id, idx, text) => {
+    setAnnotations(prev => prev.map(a => {
+      if (a.id !== id) return a;
+      const comments = (a.comments || []).map((c, i) => i === idx ? { ...c, text, editedAt: new Date().toISOString() } : c);
+      return { ...a, comments, history: [...(a.history || []), hEntry("Comment edited", text.slice(0, 60))] };
+    }));
+  };
+  const deleteComment = (id, idx) => {
+    setAnnotations(prev => prev.map(a => {
+      if (a.id !== id) return a;
+      const removed = (a.comments || [])[idx];
+      const comments = (a.comments || []).filter((_, i) => i !== idx);
+      const detail = removed ? `${removed.author}: ${(removed.text || "").slice(0, 50)}` : "";
+      return { ...a, comments, history: [...(a.history || []), hEntry("Comment deleted", detail)] };
+    }));
+  };
   const changeType = (id, noteType) => {
     setAnnotations(prev => prev.map(a => a.id === id ? {
       ...a, noteType,
@@ -890,7 +943,9 @@ export default function DrawingNotes({ initialData, onBack, onSave }) {
               filteredAnnotations.map(a => (
                 <FootnoteCard key={a.id} annotation={a} active={activeAnnotation === a.id}
                   onActivate={() => setActiveAnnotation(a.id === activeAnnotation ? null : a.id)}
-                  onUpdate={updateAnnotation} onDelete={deleteAnnotation} onAddComment={addComment} onTypeChange={changeType} />
+                  onUpdate={updateAnnotation} onDelete={deleteAnnotation}
+                  onAddComment={addComment} onUpdateComment={updateComment} onDeleteComment={deleteComment}
+                  onTypeChange={changeType} />
               ))
             )}
           </div>

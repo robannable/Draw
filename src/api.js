@@ -56,6 +56,14 @@ export async function getState() {
   return request("GET", "/api/state");
 }
 
+export async function getStateLite() {
+  return request("GET", "/api/state/lite");
+}
+
+export async function getProject(id) {
+  return request("GET", `/api/projects/${encodeURIComponent(id)}`);
+}
+
 export async function saveProject(project) {
   return request("PUT", `/api/projects/${encodeURIComponent(project.id)}`, project);
 }
